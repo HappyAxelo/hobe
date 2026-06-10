@@ -88,6 +88,18 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 `);
 
+// Content reports (Google Play UGC policy requires in-app reporting)
+db.exec(`
+CREATE TABLE IF NOT EXISTS reports (
+  id INTEGER PRIMARY KEY,
+  video_id INTEGER NOT NULL REFERENCES videos(id),
+  reporter_user_id INTEGER REFERENCES users(id),
+  reason TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+`);
+
 export function getBalance(account) {
   const row = db.prepare('SELECT COALESCE(SUM(amount),0) AS bal FROM ledger WHERE account = ?').get(account);
   return Number(row.bal);

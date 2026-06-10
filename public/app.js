@@ -149,6 +149,7 @@ function slideHtml(v, kind) {
       <button data-act="like">♥<span class="cnt">${fmt(v.likes)}</span></button>
       <button data-act="sound">🔇</button>
       <button data-act="share">↗<span class="cnt">share</span></button>
+      <button data-act="report" title="Report">⚑<span class="cnt">report</span></button>
     </div>
   </section>`;
 }
@@ -175,6 +176,12 @@ async function feedClick(e) {
     openTipSheet(videoId, slide.dataset.creator);
   } else if (act === 'share') {
     shareVideo(slide);
+  } else if (act === 'report') {
+    const reason = prompt('Why are you reporting this video?') ?? '';
+    if (reason !== null) {
+      await api(`/api/videos/${videoId}/report`, { method: 'POST', json: { reason } }).catch(() => {});
+      toast('Reported. Our team will review it.');
+    }
   } else if (act === 'profile') {
     renderProfile(Number(slide.dataset.creator));
   }

@@ -168,6 +168,16 @@ app.post('/api/orders/:id/refund', async (req, res) => {
   sendJson(res, 200, refundOrder(Number(req.params.id)));
 });
 
+// ---------- content reports (Play UGC policy: in-app reporting) ----------
+app.post('/api/videos/:id/report', async (req, res) => {
+  const video = db.prepare('SELECT id FROM videos WHERE id=?').get(req.params.id);
+  if (!video) return sendJson(res, 404, { error: 'Not found' });
+  const user = currentUser(req);
+  db.prepare('INSERT INTO reports (video_id, reporter_user_id, reason) VALUES (?,?,?)')
+    .run(video.id, user?.id ?? null, String(req.body?.reason ?? '').slice(0, 300));
+  sendJson(res, 200, { ok: true });
+});
+
 // ---------- platform stats (demo dashboard) ----------
 app.get('/api/stats', (req, res) => {
   sendJson(res, 200, {

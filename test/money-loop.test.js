@@ -90,4 +90,4 @@ test('escrow: order held, released minus 4% on delivery confirmation', async () 
 test('ledger is internally consistent: every txn sums to zero', () => {
   const rows = db.prepare('SELECT txn_id, SUM(amount) s FROM ledger GROUP BY txn_id').all();
   for (const r of rows) assert.equal(r.s, 0, `txn ${r.txn_id} does not balance`);
-})
+});
