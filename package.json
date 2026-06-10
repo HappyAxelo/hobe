@@ -1,0 +1,16 @@
+{
+  "name": "hobe",
+  "version": "0.1.0",
+  "description": "Short-form video with same-day Mobile Money payouts for African creators. Rwanda-first MVP.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "seed": "node scripts/seed.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {}
+}

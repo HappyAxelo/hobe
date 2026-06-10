@@ -1,0 +1,22 @@
+# Deploy: `fly launch --copy-config --now` from the repo root (needs a Fly.io account).
+# jnb = Johannesburg — closest Fly region to Rwanda, keeps latency down for testing.
+# For production traffic, put Bunny CDN in front for video delivery (see README).
+app = "hobe"
+primary_region = "jnb"
+
+[build]
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+[mounts]
+  source = "hobe_data"
+  destination = "/app/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
