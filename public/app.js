@@ -8,7 +8,7 @@ const icon = (id, cls = 'ic') => `<svg class="${cls}"><use href="#${id}"/></svg>
 const statusIc = (kind, id) => `<div class="statusic ${kind}"><svg><use href="#${id}"/></svg></div>`;
 
 // ---------- state ----------
-let me = null; // signed-in user (or null)
+let me = null;
 let token = localStorage.getItem('hobe_token') || null;
 const state = { tab: 'watch' };
 
@@ -23,7 +23,17 @@ async function api(path, opts = {}) {
   return body;
 }
 
-// ---------- toast ----------
+// ---------- helpers ----------
+function avatarHtml(u, size = 36) {
+  const style = `width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px`;
+  if (u.avatar) {
+    return `<img class="avatar" style="${style};object-fit:cover" src="/avatars/${u.avatar}" alt="">`;
+  }
+  const name = u.name || '?';
+  const init = name.split(' ').map((w) => w[0]).slice(0, 2).join('');
+  return `<div class="avatar" style="background:${u.color || '#242936'};${style}">${esc(init)}</div>`;
+}
+
 let toastTimer;
 function toast(msg, ms = 2600) {
   const t = $('#toast');
@@ -33,7 +43,6 @@ function toast(msg, ms = 2600) {
   toastTimer = setTimeout(() => t.classList.add('hidden'), ms);
 }
 
-// ---------- sheet ----------
 function openSheet(html) {
   const s = $('#sheet');
   let bd = $('.backdrop');
@@ -71,7 +80,7 @@ function renderUserPill() {
 }
 
 function openLoginSheet(afterLogin) {
-  const s = openSheet(`
+  openSheet(`
     <h2>Sign in</h2>
     <p class="dim">Your number is your account — it's where your money goes.</p>
     <label>Phone number</label>
@@ -94,7 +103,7 @@ function openLoginSheet(afterLogin) {
 function openSignupSheet(afterLogin) {
   openSheet(`
     <h2>Create your account</h2>
-    <p class="dim">Free. Your MoMo number becomes your payout wallet.</p>
+    <p class="dim">Free. Your MoMo number becomes your payout wallet. You can add a profile photo right after.</p>
     <label>Your name</label>
     <input id="sname" placeholder="Name people will see" autocomplete="name">
     <label>Phone number (MTN or Airtel)</label>
@@ -108,25 +117,54 @@ function openSignupSheet(afterLogin) {
     try {
       setAuth(await api('/api/auth/signup', { method: 'POST', json: { name: $('#sname').value, phone: $('#sphone').value, password: $('#spass').value } }));
       closeSheet(); toast(`Karibu, ${me.name.split(' ')[0]}! Your wallet is ready.`);
-      (afterLogin ?? render)();
+      openAccountSheet(); // straight to the account sheet so they can add a photo
     } catch (err) { toast(err.message); }
   };
   $('#gologin').onclick = (e) => { e.preventDefault(); openLoginSheet(afterLogin); };
 }
 
 function openAccountSheet() {
-  openSheet(`
-    <h2>${esc(me.name)}</h2>
-    <p class="dim">@${me.handle} · ${esc(me.phone)}</p>
-    <button class="ghost" id="dologout" style="width:100%;margin-top:14px">Log out</button>
+  const s = openSheet(`
+    <div class="row" style="justify-content:flex-start;gap:14px">
+      <div style="position:relative" id="avwrap">
+        ${avatarHtml(me, 64)}
+        <button id="changephoto" class="photobtn" title="Change photo">${icon('i-camera')}</button>
+      </div>
+      <div>
+        <h2 style="margin:0">${esc(me.name)}</h2>
+        <p class="dim">@${me.handle} · ${esc(me.phone)}</p>
+      </div>
+    </div>
+    <input type="file" id="avfile" accept="image/*" style="display:none">
+    <button class="ghost" id="myprofile" style="width:100%;margin-top:16px">My videos & profile</button>
+    <button class="ghost" id="dologout" style="width:100%;margin-top:8px">Log out</button>
     <p class="dim center" style="margin-top:14px"><a href="/privacy.html" style="color:var(--dim)">Privacy policy</a></p>
   `);
+  $('#changephoto').onclick = () => $('#avfile').click();
+  $('#avfile').onchange = async () => {
+    const f = $('#avfile').files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append('photo', f);
+    $('#avwrap').style.opacity = '.4';
+    try {
+      const r = await api('/api/me/avatar', { method: 'POST', body: fd });
+      me.avatar = r.avatar;
+      toast('Profile photo updated');
+      openAccountSheet(); // re-render with new photo
+    } catch (err) {
+      toast(err.message);
+      $('#avwrap').style.opacity = '1';
+    }
+  };
+  $('#myprofile').onclick = () => { closeSheet(); renderProfile(me.id); };
   $('#dologout').onclick = async () => {
     await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
     token = null; me = null;
     localStorage.removeItem('hobe_token');
     renderUserPill(); closeSheet(); render();
   };
+  void s;
 }
 
 $('#userpill').onclick = () => (me ? openAccountSheet() : openLoginSheet());
@@ -147,7 +185,7 @@ function pollTxn(id, { timeoutMs = 30000 } = {}) {
   });
 }
 
-// ---------- feed (watch / learn) ----------
+// ---------- feed ----------
 let observer = null;
 
 async function renderFeed(kind) {
@@ -181,14 +219,13 @@ async function renderFeed(kind) {
 }
 
 function slideHtml(v, kind) {
-  const init = v.creator_name.split(' ').map((w) => w[0]).slice(0, 2).join('');
   const langNames = { rw: 'Kinyarwanda', en: 'English', fr: 'Français', sw: 'Kiswahili' };
   return `
   <section class="slide" data-vid="${v.id}" data-creator="${v.user_id}" data-cname="${esc(v.creator_name)}">
     <video src="/videos/${v.filename}" loop playsinline preload="${kind === 'watch' ? 'auto' : 'metadata'}" muted></video>
     <div class="overlay">
       <div class="who" data-act="profile">
-        <div class="avatar" style="background:${v.creator_color}">${init}</div>
+        ${avatarHtml({ name: v.creator_name, color: v.creator_color, avatar: v.creator_avatar }, 36)}
         <div><div class="handle">@${v.creator_handle}</div></div>
       </div>
       <div class="vtitle">${esc(v.title)}</div>
@@ -307,17 +344,17 @@ async function shareVideo(slide) {
   }
 }
 
-// ---------- profile + storefront ----------
+// ---------- profile (with own-video management) ----------
 async function renderProfile(creatorId) {
   const c = await api(`/api/creators/${creatorId}`);
-  const init = c.name.split(' ').map((w) => w[0]).slice(0, 2).join('');
+  const mine = me && Number(me.id) === Number(c.id);
   view.innerHTML = `
   <div class="panel">
     <button class="ghost" id="back" style="display:flex;align-items:center;gap:6px">${icon('i-back')} Back</button>
     <div class="card" style="margin-top:10px">
       <div class="row">
         <div class="who">
-          <div class="avatar" style="background:${c.color};width:50px;height:50px;font-size:18px">${init}</div>
+          ${avatarHtml(c, 50)}
           <div><h2 style="margin:0">${esc(c.name)}</h2><div class="dim">@${c.handle}</div></div>
         </div>
         <div style="text-align:right"><div class="big" style="font-size:21px">${fmt(c.tips_total)}</div><div class="dim">RWF tipped</div></div>
@@ -325,11 +362,45 @@ async function renderProfile(creatorId) {
       <p style="margin-top:10px;font-size:14px">${esc(c.bio)}</p>
     </div>
     ${c.products.length ? `<h3>Shop</h3>${c.products.map(productCard).join('')}` : ''}
-    <h3>Videos</h3>
-    ${c.videos.map((v) => `<div class="card row"><span>${esc(v.title)}</span><span class="dim">${fmt(v.views)} views</span></div>`).join('') || '<p class="dim">None yet.</p>'}
+    <h3>${mine ? 'My videos' : 'Videos'}</h3>
+    ${c.videos.map((v) => `
+      <div class="card row" data-mvid="${v.id}" data-mtitle="${esc(v.title)}">
+        <div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v.title)}</div>
+          <div class="dim">${fmt(v.views)} views · ${fmt(v.likes)} likes</div></div>
+        ${mine ? `<div style="display:flex;gap:8px;flex:none">
+          <button class="ghost editvid" title="Edit caption">${icon('i-edit')}</button>
+          <button class="ghost delvid" title="Delete video" style="color:var(--bad)">${icon('i-trash')}</button>
+        </div>` : ''}
+      </div>`).join('') || '<p class="dim">None yet.</p>'}
   </div>`;
   $('#back').onclick = () => setTab(state.tab);
   bindBuyButtons();
+
+  if (mine) {
+    view.querySelectorAll('.editvid').forEach((b) => {
+      b.onclick = async () => {
+        const card = b.closest('[data-mvid]');
+        const newTitle = prompt('New caption:', card.dataset.mtitle);
+        if (newTitle === null || !newTitle.trim()) return;
+        try {
+          await api(`/api/videos/${card.dataset.mvid}/edit`, { method: 'POST', json: { title: newTitle.trim() } });
+          toast('Caption updated');
+          renderProfile(creatorId);
+        } catch (err) { toast(err.message); }
+      };
+    });
+    view.querySelectorAll('.delvid').forEach((b) => {
+      b.onclick = async () => {
+        const card = b.closest('[data-mvid]');
+        if (!confirm(`Delete "${card.dataset.mtitle}"? This cannot be undone.`)) return;
+        try {
+          await api(`/api/videos/${card.dataset.mvid}/delete`, { method: 'POST' });
+          toast('Video deleted');
+          renderProfile(creatorId);
+        } catch (err) { toast(err.message); }
+      };
+    });
+  }
 }
 
 function productCard(p) {
@@ -487,8 +558,8 @@ function renderUpload() {
     <div class="card">
       <label>Video file (from your phone camera or gallery)</label>
       <input type="file" id="vfile" accept="video/*">
-      <label>Title</label>
-      <input id="vtitle" placeholder="Give it a title people will tip for">
+      <label>Caption</label>
+      <input id="vtitle" placeholder="Give it a caption people will tip for">
       <label>Feed</label>
       <select id="vkind">
         <option value="watch">Watch — entertainment feed</option>
@@ -500,7 +571,7 @@ function renderUpload() {
         <option value="fr">Français</option><option value="sw">Kiswahili</option>
       </select>
       <button class="primary" id="upbtn" style="margin-top:10px">Upload</button>
-      <p class="dim" style="margin-top:8px">Every upload is compressed for 3G so your viewers spend less data.</p>
+      <p class="dim" style="margin-top:8px">Every upload is compressed for 3G so your viewers spend less data. You can edit the caption or delete the video later from your profile.</p>
     </div>
   </div>`;
   $('#upbtn').onclick = async () => {

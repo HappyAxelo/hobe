@@ -6,6 +6,7 @@ import { config } from './config.js';
 
 fs.mkdirSync(config.dataDir, { recursive: true });
 fs.mkdirSync(path.join(config.dataDir, 'videos'), { recursive: true });
+fs.mkdirSync(path.join(config.dataDir, 'avatars'), { recursive: true });
 
 export const db = new DatabaseSync(path.join(config.dataDir, 'hobe.db'));
 try { db.exec('PRAGMA journal_mode = WAL'); } catch { /* some filesystems cannot WAL */ }
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
   bio TEXT DEFAULT '',
   color TEXT DEFAULT '#7c5cff',
   password_hash TEXT,
+  avatar TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -42,6 +44,7 @@ CREATE TABLE IF NOT EXISTS videos (
   size_bytes INTEGER DEFAULT 0,
   views INTEGER NOT NULL DEFAULT 0,
   likes INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -105,9 +108,11 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 `);
 
-// Migrations for databases created before these columns/tables existed
+// Migrations for databases created before these columns existed
 // (e.g. the live Fly volume). Safe to re-run.
-try { db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch { /* already there */ }
+try { db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch { /* exists */ }
+try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT'); } catch { /* exists */ }
+try { db.exec('ALTER TABLE videos ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0'); } catch { /* exists */ }
 
 export function getBalance(account) {
   const row = db.prepare('SELECT COALESCE(SUM(amount),0) AS bal FROM ledger WHERE account = ?').get(account);

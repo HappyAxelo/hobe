@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import { createApp, sendJson } from './http.js';
 import { parseUpload } from './multipart.js';
 import { config } from './config.js';
@@ -8,15 +9,14 @@ import {
   provider, startTip, startOrder, startWithdrawal, availableBalance,
   confirmDelivery, refundOrder, startSettlementWorker,
 } from './money.js';
-import { transcode, probeDuration } from './transcode.js';
+import { transcode, probeDuration, hasFfmpeg } from './transcode.js';
 import { signup, login, getSessionUser, deleteSession, publicUser } from './auth.js';
 
 const app = createApp();
 const videosDir = path.join(config.dataDir, 'videos');
+const avatarsDir = path.join(config.dataDir, 'avatars');
 
 // ---------- auth ----------
-// Session token in Authorization: Bearer <token>.
-// DEMO_AUTH=1 additionally allows the old X-User-Id header (local testing only).
 function currentUser(req) {
   const bearer = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
   const fromSession = getSessionUser(bearer);
@@ -54,11 +54,38 @@ app.get('/api/me', (req, res) => {
   sendJson(res, 200, { ...publicUser(u), phone: u.phone });
 });
 
+// ---------- profile photo ----------
+app.post('/api/me/avatar', async (req, res) => {
+  const user = requireUser(req);
+  const { file } = await parseUpload(req, path.join(config.dataDir, 'tmp'), { maxBytes: 8 * 1024 * 1024 });
+  if (!file) return sendJson(res, 400, { error: 'No image file' });
+
+  const filename = `u${user.id}-${Date.now()}.jpg`;
+  const outPath = path.join(avatarsDir, filename);
+  if (await hasFfmpeg()) {
+    await new Promise((resolve, reject) => {
+      const p = spawn('ffmpeg', ['-y', '-i', file.path,
+        '-vf', 'scale=256:256:force_original_aspect_ratio=increase,crop=256:256',
+        '-frames:v', '1', '-q:v', '4', outPath]);
+      p.on('error', reject);
+      p.on('exit', (code) => (code === 0 ? resolve() : reject(Object.assign(new Error('That file does not look like an image'), { status: 400 }))));
+    });
+  } else {
+    fs.copyFileSync(file.path, outPath); // dev fallback without ffmpeg
+  }
+  fs.rmSync(file.path, { force: true });
+
+  const old = db.prepare('SELECT avatar FROM users WHERE id=?').get(user.id)?.avatar;
+  db.prepare('UPDATE users SET avatar=? WHERE id=?').run(filename, user.id);
+  if (old) fs.rm(path.join(avatarsDir, String(old)), { force: true }, () => {});
+  sendJson(res, 200, { avatar: filename });
+});
+
 // ---------- creators (public — no phone numbers) ----------
 app.get('/api/creators/:id', (req, res) => {
   const creator = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
   if (!creator) return sendJson(res, 404, { error: 'Not found' });
-  const videos = db.prepare('SELECT * FROM videos WHERE user_id=? ORDER BY created_at DESC').all(creator.id);
+  const videos = db.prepare('SELECT * FROM videos WHERE user_id=? AND deleted=0 ORDER BY created_at DESC').all(creator.id);
   const products = db.prepare('SELECT * FROM products WHERE creator_id=? AND active=1').all(creator.id);
   const tipsTotal = Number(db.prepare(`
     SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE type='tip' AND status='success' AND payee_user_id=?
@@ -67,14 +94,13 @@ app.get('/api/creators/:id', (req, res) => {
 });
 
 // ---------- feed ----------
-// Recency + engagement. Deliberately simple: score = engagement / age^1.4
 app.get('/api/feed', (req, res) => {
   const kind = req.query.kind === 'learn' ? 'learn' : 'watch';
   const rows = db.prepare(`
-    SELECT v.*, u.name AS creator_name, u.handle AS creator_handle, u.color AS creator_color,
+    SELECT v.*, u.name AS creator_name, u.handle AS creator_handle, u.color AS creator_color, u.avatar AS creator_avatar,
       (SELECT COUNT(*) FROM transactions t WHERE t.video_id=v.id AND t.type='tip' AND t.status='success') AS tip_count
     FROM videos v JOIN users u ON u.id = v.user_id
-    WHERE v.kind = ?
+    WHERE v.kind = ? AND v.deleted = 0
     ORDER BY v.created_at DESC LIMIT 200
   `).all(kind);
   const now = Date.now() / 1000;
@@ -95,7 +121,7 @@ app.post('/api/videos/:id/like', (req, res) => {
   sendJson(res, 200, { ok: true, likes: Number(db.prepare('SELECT likes FROM videos WHERE id=?').get(req.params.id)?.likes ?? 0) });
 });
 
-// ---------- upload (signed-in users only) ----------
+// ---------- upload / edit / delete (owner only) ----------
 app.post('/api/videos', async (req, res) => {
   const user = requireUser(req);
   const { fields, file } = await parseUpload(req, path.join(config.dataDir, 'tmp'));
@@ -115,7 +141,33 @@ app.post('/api/videos', async (req, res) => {
   sendJson(res, 200, { ...db.prepare('SELECT * FROM videos WHERE id=?').get(Number(info.lastInsertRowid)), transcoded });
 });
 
-// ---------- money: tips (no login needed — anyone with a MoMo number can tip) ----------
+function ownVideo(req) {
+  const user = requireUser(req);
+  const video = db.prepare('SELECT * FROM videos WHERE id=? AND deleted=0').get(Number(req.params.id));
+  if (!video) throw Object.assign(new Error('Video not found'), { status: 404 });
+  if (Number(video.user_id) !== Number(user.id)) throw Object.assign(new Error('You can only manage your own videos'), { status: 403 });
+  return video;
+}
+
+app.post('/api/videos/:id/edit', async (req, res) => {
+  const video = ownVideo(req);
+  const { title, lang, kind } = req.body ?? {};
+  const newTitle = String(title ?? video.title).trim().slice(0, 120) || video.title;
+  const newLang = ['rw', 'en', 'fr', 'sw'].includes(lang) ? lang : video.lang;
+  const newKind = ['watch', 'learn'].includes(kind) ? kind : video.kind;
+  db.prepare('UPDATE videos SET title=?, lang=?, kind=? WHERE id=?').run(newTitle, newLang, newKind, video.id);
+  sendJson(res, 200, db.prepare('SELECT * FROM videos WHERE id=?').get(video.id));
+});
+
+app.post('/api/videos/:id/delete', async (req, res) => {
+  const video = ownVideo(req);
+  // Soft delete: the row stays (tips reference it in the ledger), the file goes.
+  db.prepare('UPDATE videos SET deleted=1 WHERE id=?').run(video.id);
+  fs.rm(path.join(videosDir, String(video.filename)), { force: true }, () => {});
+  sendJson(res, 200, { ok: true });
+});
+
+// ---------- money: tips ----------
 app.post('/api/tips', async (req, res) => {
   const user = currentUser(req);
   const { video_id, amount, payer_phone } = req.body ?? {};
@@ -131,7 +183,7 @@ app.get('/api/transactions/:id', (req, res) => {
   sendJson(res, 200, txn);
 });
 
-// ---------- money: wallet & withdrawals (signed-in) ----------
+// ---------- money: wallet & withdrawals ----------
 app.get('/api/wallet', (req, res) => {
   const user = requireUser(req);
   const account = `user:${user.id}`;
@@ -149,7 +201,6 @@ app.get('/api/wallet', (req, res) => {
 
 app.post('/api/withdrawals', async (req, res) => {
   const user = requireUser(req);
-  // Payout binding: money can only leave to the phone this account signed up with.
   const txn = await startWithdrawal({ userId: user.id, amount: Number(req.body?.amount) });
   sendJson(res, 202, txn);
 });
@@ -191,11 +242,11 @@ app.post('/api/orders/:id/confirm-delivery', async (req, res) => {
 });
 
 app.post('/api/orders/:id/refund', async (req, res) => {
-  requireUser(req); // v1: any signed-in party can trigger; production restricts to admin/dispute flow
+  requireUser(req);
   sendJson(res, 200, refundOrder(Number(req.params.id)));
 });
 
-// ---------- content reports (Play UGC policy: in-app reporting) ----------
+// ---------- content reports ----------
 app.post('/api/videos/:id/report', async (req, res) => {
   const video = db.prepare('SELECT id FROM videos WHERE id=?').get(req.params.id);
   if (!video) return sendJson(res, 404, { error: 'Not found' });
@@ -216,8 +267,9 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
-// ---------- static: videos (Range supported) + PWA ----------
+// ---------- static ----------
 app.static('/videos/', videosDir, 365 * 24 * 3600);
+app.static('/avatars/', avatarsDir, 30 * 24 * 3600);
 app.static('/', path.join(config.root, 'public'), 3600);
 
 if (process.env.NODE_ENV !== 'test') {

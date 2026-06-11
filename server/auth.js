@@ -102,7 +102,7 @@ export function login({ phone, password }) {
 
 export function publicUser(u) {
   if (!u) return null;
-  return { id: u.id, name: u.name, handle: u.handle, role: u.role, bio: u.bio, color: u.color };
+  return { id: u.id, name: u.name, handle: u.handle, role: u.role, bio: u.bio, color: u.color, avatar: u.avatar ?? null };
 }
 
 function httpErr(status, message) {
