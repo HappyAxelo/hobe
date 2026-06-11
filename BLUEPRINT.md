@@ -247,3 +247,57 @@ Deploy order on day one of production credentials: money module first, behind a 
 ## Key principle, restated
 
 Ship the loop: money in → split → wallet → MoMo payout, same day, with a ledger that always sums to zero. The feed earns attention; the loop earns trust; trust is the product.
+
+
+---
+
+## 9. Production Audit (of the deployed MVP at hobe-*.fly.dev)
+
+Honest state of what is live, judged against production-grade.
+
+| Area | State | Verdict | Fix |
+|---|---|---|---|
+| Ledger correctness | Double-entry, zero-sum invariant tested, no balance columns | Sound | Keep; add nightly reconciliation when real rails connect |
+| Money rails | Simulator only | Demo-grade by design | MTN sandbox creds → `MOMO_PROVIDER=mtn`; production after MTN agreement |
+| Auth | Demo user switcher, X-User-Id header | Not production | OTP-over-SMS, sessions, payout binding (week-1 item) |
+| Idempotency | Provider refs unique; polling settles once | Adequate | Add webhook signature checks with real MTN callbacks |
+| Database | SQLite on a single Fly volume | Fine to ~10k users | Postgres (Fly managed) when adding a second machine; schema is portable |
+| Video delivery | App server disk + HTTP Range | Fine for pilot | R2 + Bunny CDN when egress costs appear |
+| Observability | Console logs only | Weak | Add structured logs + uptime check + error alerting (half a day) |
+| Moderation | Report button + reports table | Minimum viable | Admin review UI + takedown endpoint next |
+| Single machine, auto-stop | Cold starts after idle | Acceptable for testing | `min_machines_running = 1` before public launch (~$2/mo) |
+| Fraud controls | Overdraw-safe, failed txns write nothing | Baseline | Velocity limits + payout review queue before real money |
+
+The architecture is not broken; it is deliberately minimal with correct money math. The gap to production is credentials, auth, and ops — not a rebuild.
+
+## 10. Unit Economics
+
+Assumptions, stated so they can be attacked: 30% of MAU active daily; 15 plays per DAU per day; 3.5 MB per play; 8% of MAU tip in a month; 6 tips per tipper per month; average tip 700 RWF; platform keeps 15% of tips + 4% of storefront sales (storefront ignored below = upside); 1 USD ≈ 1,400 RWF; delivery $0.06/GB; collection/disbursement operator fees absorbed in the 5% bucket (true at ≥500 RWF minimum tip).
+
+| Metric | 10k MAU | 100k MAU | 1M MAU |
+|---|---|---|---|
+| Tip volume / mo | 3.36M RWF (~$2.4k) | 33.6M RWF (~$24k) | 336M RWF (~$240k) |
+| Creator payouts (80%) | $1.9k | $19.2k | $192k |
+| Platform revenue (15%) | $360 | $3,600 | $36,000 |
+| Video delivery (TB/mo → $) | 4.7 TB → $284 | 47 TB → $2,835 | 472 TB → $28,350 |
+| Servers + DB + SMS OTP | ~$80 | ~$400 | ~$2,500 |
+| Infra total | ~$364 | ~$3,235 | ~$30,850 |
+| **Gross margin on platform revenue** | **≈ break-even** | **≈ +11%** | **≈ +14%** |
+
+What the table teaches:
+
+1. **Delivery cost tracks viewers; revenue tracks tippers.** Watching is a cost centre. The lever is conversion (8% → 12% changes everything) and tip size, not more views.
+2. **Bandwidth is ~90% of infra.** The 450 kbps cap is not a nicety — doubling bitrate erases the margin. AV1 second rendition (−40% bytes for capable phones) is a profit feature, not a tech flex.
+3. **Tips alone are a thin business; the stack is tips + storefront commission + (later) boosted posts.** Storefront at 4% of even modest volume dominates tip revenue per active creator — sell-through is the real monetisation of attention.
+4. Wallet top-ups (one collection funds many tips) cut operator fees and raise the floor on small tips — scheduled v1.1.
+
+## 11. Failure Analysis
+
+| Vector | How it kills Hobe | Mitigation in design |
+|---|---|---|
+| Technical | Ledger drift / double-payouts destroy trust in one incident | Zero-sum invariant, single settlement writer, reconciliation, review queue |
+| Financial | Bandwidth outruns revenue while conversion stays low | Bitrate cap, CDN economics, storefront as second engine, top-ups |
+| Rwanda-specific | MTN partner agreement stalls for months | Aggregator fallback is one config change (adapter already built); PWA needs no store approval to iterate |
+| Regulatory | BNR treats balances as unlicensed e-money | Pass-through mode (no stored balances) as legal fallback; licence/umbrella path in §8 |
+| Fraud | Mule loops: many small tips in, one payout out | Payout binding, velocity caps, KYC tiers, circular-pattern flags |
+| Market | Creators post but viewers don't tip (culture gap) | Pilot measures tip conversion before scaling spend; learn-tab and storefront give non-tip reasons to transact |

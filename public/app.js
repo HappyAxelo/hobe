@@ -4,6 +4,8 @@
 const $ = (sel, el = document) => el.querySelector(sel);
 const view = $('#view');
 const fmt = (n) => Number(n).toLocaleString('en-US');
+const icon = (id, cls = 'ic') => `<svg class="${cls}"><use href="#${id}"/></svg>`;
+const statusIc = (kind, id) => `<div class="statusic ${kind}"><svg><use href="#${id}"/></svg></div>`;
 
 // ---------- state ----------
 let users = [];
@@ -49,6 +51,8 @@ function closeSheet() {
   $('#sheet').classList.add('hidden');
   $('.backdrop')?.remove();
 }
+window.__closeSheet = closeSheet;
+const doneBtn = (label = 'Done') => `<button class="primary" style="margin-top:14px" onclick="window.__closeSheet()">${label}</button>`;
 
 // ---------- user switcher (demo auth) ----------
 async function loadUsers() {
@@ -58,15 +62,15 @@ async function loadUsers() {
   renderUserPill();
 }
 function renderUserPill() {
-  $('#userpill').textContent = me ? `${me.name.split(' ')[0]} ▾` : 'Sign in';
+  $('#userpill').textContent = me ? me.name.split(' ')[0] : 'Sign in';
 }
 $('#userpill').onclick = () => {
   openSheet(`
     <h2>Who are you?</h2>
-    <p class="dim">Demo login — production uses OTP on your MoMo number.</p>
-    <div id="userlist">${users.map((u) => `
+    <p class="dim">Demo login — production uses a one-time code sent to your MoMo number.</p>
+    <div id="userlist" style="margin-top:10px">${users.map((u) => `
       <button class="ghost" style="width:100%;margin:5px 0;display:flex;justify-content:space-between" data-uid="${u.id}">
-        <span>${u.name} <span class="dim">@${u.handle}</span></span>
+        <span>${esc(u.name)} <span class="dim">@${u.handle}</span></span>
         <span class="dim">${u.role}</span>
       </button>`).join('')}
     </div>`);
@@ -103,7 +107,7 @@ let observer = null;
 async function renderFeed(kind) {
   const vids = await api(`/api/feed?kind=${kind}`);
   if (!vids.length) {
-    view.innerHTML = `<div class="empty"><p>No videos yet.</p><p>Run <b>npm run seed</b> to load demo content.</p></div>`;
+    view.innerHTML = `<div class="empty"><p>No videos yet.</p><p>Tap the + button to upload the first one.</p></div>`;
     return;
   }
   view.innerHTML = `<div class="feed">${vids.map((v) => slideHtml(v, kind)).join('')}</div>`;
@@ -142,14 +146,14 @@ function slideHtml(v, kind) {
         <div><div class="handle">@${v.creator_handle}</div></div>
       </div>
       <div class="vtitle">${esc(v.title)}</div>
-      ${v.kind === 'learn' ? `<div class="lang">🎓 ${langNames[v.lang] || v.lang} · 60-sec lesson</div>` : ''}
+      ${v.kind === 'learn' ? `<div class="lang"><span class="tagpill">${langNames[v.lang] || v.lang} · 60-sec lesson</span></div>` : ''}
     </div>
     <div class="rail">
-      <button data-act="tip" class="tipbtn">RWF<span class="cnt" style="color:#1b1500">tip</span></button>
-      <button data-act="like">♥<span class="cnt">${fmt(v.likes)}</span></button>
-      <button data-act="sound">🔇</button>
-      <button data-act="share">↗<span class="cnt">share</span></button>
-      <button data-act="report" title="Report">⚑<span class="cnt">report</span></button>
+      <button data-act="tip" class="tipbtn"><span>RWF</span><span class="cnt">tip</span></button>
+      <button data-act="like">${icon('i-heart')}<span class="cnt">${fmt(v.likes)}</span></button>
+      <button data-act="sound">${icon('i-mute')}</button>
+      <button data-act="share">${icon('i-share')}<span class="cnt">share</span></button>
+      <button data-act="report" title="Report this video">${icon('i-flag')}</button>
     </div>
   </section>`;
 }
@@ -168,16 +172,17 @@ async function feedClick(e) {
   if (act === 'like') {
     const r = await api(`/api/videos/${videoId}/like`, { method: 'POST' });
     $('.cnt', btn).textContent = fmt(r.likes);
+    btn.classList.add('liked');
   } else if (act === 'sound') {
     const v = $('video', slide);
     v.muted = !v.muted;
-    btn.firstChild.textContent = v.muted ? '🔇' : '🔊';
+    $('use', btn).setAttribute('href', v.muted ? '#i-mute' : '#i-sound');
   } else if (act === 'tip') {
     openTipSheet(videoId, slide.dataset.creator);
   } else if (act === 'share') {
     shareVideo(slide);
   } else if (act === 'report') {
-    const reason = prompt('Why are you reporting this video?') ?? '';
+    const reason = prompt('Why are you reporting this video?');
     if (reason !== null) {
       await api(`/api/videos/${videoId}/report`, { method: 'POST', json: { reason } }).catch(() => {});
       toast('Reported. Our team will review it.');
@@ -199,8 +204,7 @@ function openTipSheet(videoId, creatorId) {
     </div>
     <label>Pay from MoMo number</label>
     <input id="tipphone" value="${me?.phone ?? ''}" inputmode="tel">
-    <button class="primary" id="sendtip">Send ${fmt(amount)} RWF</button>
-    <p class="dim center" style="margin-top:8px">Simulator: numbers ending 99 fail, ending 77 hang.</p>
+    <button class="primary" id="sendtip" style="margin-top:8px">Send ${fmt(amount)} RWF</button>
   `);
   $('.chips', s).onclick = (e) => {
     const c = e.target.closest('.chip');
@@ -212,33 +216,29 @@ function openTipSheet(videoId, creatorId) {
   };
   $('#sendtip').onclick = async () => {
     const phone = $('#tipphone').value.trim();
-    s.innerHTML = `<div class="center"><div class="spin"></div><p style="margin-top:12px">Sending MoMo request…</p>
+    s.innerHTML = `<div class="center"><div class="spin"></div><p style="margin-top:14px">Sending MoMo request…</p>
       <p class="dim">Approve the payment prompt on the payer's phone.</p></div>`;
     try {
       const txn = await api('/api/tips', { method: 'POST', json: { video_id: videoId, amount, payer_phone: phone } });
       const done = await pollTxn(txn.id);
       if (done.status === 'success') {
         const cut = amount - Math.floor(amount * 0.15) - Math.floor(amount * 0.05); // mirrors server split
-        s.innerHTML = `<div class="center"><div class="bigicon">🎉</div>
+        s.innerHTML = `<div class="center">${statusIc('s-ok', 'i-check')}
           <h2>Murakoze! Tip sent</h2>
           <p class="dim">${fmt(amount)} RWF sent — ${creator ? esc(creator.name) : 'the creator'} receives <b class="ok">${fmt(cut)} RWF</b> in their wallet right now.</p>
-          <button class="primary" style="margin-top:14px" onclick="window.__closeSheet()">Done</button></div>`;
+          ${doneBtn()}</div>`;
       } else if (done.status === 'failed') {
-        s.innerHTML = `<div class="center"><div class="bigicon">😕</div><h2>Payment failed</h2>
-          <p class="dim">${esc(done.fail_reason || 'The MoMo payment did not complete.')}</p>
-          <button class="primary" style="margin-top:14px" onclick="window.__closeSheet()">Close</button></div>`;
+        s.innerHTML = `<div class="center">${statusIc('s-bad', 'i-x')}<h2>Payment failed</h2>
+          <p class="dim">${esc(done.fail_reason || 'The MoMo payment did not complete.')}</p>${doneBtn('Close')}</div>`;
       } else {
-        s.innerHTML = `<div class="center"><div class="bigicon">⏳</div><h2>Still pending</h2>
-          <p class="dim">The payment prompt hasn't been approved yet. It will land automatically if approved.</p>
-          <button class="primary" style="margin-top:14px" onclick="window.__closeSheet()">Close</button></div>`;
+        s.innerHTML = `<div class="center">${statusIc('s-wait', 'i-clock')}<h2>Still pending</h2>
+          <p class="dim">The payment prompt hasn't been approved yet. It will land automatically if approved.</p>${doneBtn('Close')}</div>`;
       }
     } catch (err) {
-      s.innerHTML = `<div class="center"><div class="bigicon">⚠️</div><h2>Error</h2><p class="dim">${esc(err.message)}</p>
-        <button class="primary" style="margin-top:14px" onclick="window.__closeSheet()">Close</button></div>`;
+      s.innerHTML = `<div class="center">${statusIc('s-bad', 'i-x')}<h2>Error</h2><p class="dim">${esc(err.message)}</p>${doneBtn('Close')}</div>`;
     }
   };
 }
-window.__closeSheet = closeSheet;
 
 // ---------- share (offline P2P, honest version) ----------
 async function shareVideo(slide) {
@@ -253,11 +253,10 @@ async function shareVideo(slide) {
       return;
     }
   } catch { /* fall through */ }
-  // Fallback: save for offline playback in this app
   try {
     const cache = await caches.open('hobe-videos');
     await cache.add(src);
-    toast('Saved for offline. Wi-Fi Direct phone-to-phone needs the native wrapper — see README.');
+    toast('Saved for offline watching on this phone.');
   } catch {
     toast('Sharing not available in this browser.');
   }
@@ -269,14 +268,14 @@ async function renderProfile(creatorId) {
   const init = c.name.split(' ').map((w) => w[0]).slice(0, 2).join('');
   view.innerHTML = `
   <div class="panel">
-    <button class="ghost" id="back">← Back</button>
+    <button class="ghost" id="back" style="display:flex;align-items:center;gap:6px">${icon('i-back')} Back</button>
     <div class="card" style="margin-top:10px">
       <div class="row">
         <div class="who">
-          <div class="avatar" style="background:${c.color};width:48px;height:48px;font-size:18px">${init}</div>
+          <div class="avatar" style="background:${c.color};width:50px;height:50px;font-size:18px">${init}</div>
           <div><h2 style="margin:0">${esc(c.name)}</h2><div class="dim">@${c.handle}</div></div>
         </div>
-        <div style="text-align:right"><div class="big" style="font-size:20px">${fmt(c.tips_total)}</div><div class="dim">RWF tipped</div></div>
+        <div style="text-align:right"><div class="big" style="font-size:21px">${fmt(c.tips_total)}</div><div class="dim">RWF tipped</div></div>
       </div>
       <p style="margin-top:10px;font-size:14px">${esc(c.bio)}</p>
     </div>
@@ -291,7 +290,7 @@ async function renderProfile(creatorId) {
 function productCard(p) {
   return `<div class="card row" data-pid="${p.id}">
     <div class="row" style="gap:12px">
-      <div class="product-thumb" style="background:${p.creator_color || '#241f33'}">🛍</div>
+      <div class="product-thumb" style="background:${p.creator_color || '#242936'}">${icon('i-bag', '')}</div>
       <div><b>${esc(p.title)}</b><div class="dim">${esc(p.description || '')}</div></div>
     </div>
     <div style="text-align:right">
@@ -328,7 +327,7 @@ function orderCard(o) {
   return `<div class="card" data-oid="${o.id}">
     <div class="row"><b>${esc(o.product_title)}</b><span>${fmt(o.amount)} RWF</span></div>
     <div class="row" style="margin-top:8px">${badge}
-      ${o.status === 'in_escrow' && mine ? '<button class="ghost confirmbtn">📦 I received it</button>' : ''}
+      ${o.status === 'in_escrow' && mine ? '<button class="ghost confirmbtn">I received it</button>' : ''}
     </div>
   </div>`;
 }
@@ -342,25 +341,22 @@ function bindBuyButtons() {
         <p class="dim">Payment is held in escrow until you confirm delivery.</p>
         <label>Pay from MoMo number</label>
         <input id="buyphone" value="${me?.phone ?? ''}" inputmode="tel">
-        <button class="primary" id="dobuy">Pay with MoMo</button>`);
+        <button class="primary" id="dobuy" style="margin-top:8px">Pay with MoMo</button>`);
       $('#dobuy').onclick = async () => {
         const phone = $('#buyphone').value.trim();
-        s.innerHTML = '<div class="center"><div class="spin"></div><p style="margin-top:12px">Requesting MoMo payment…</p></div>';
+        s.innerHTML = '<div class="center"><div class="spin"></div><p style="margin-top:14px">Requesting MoMo payment…</p></div>';
         try {
           const order = await api('/api/orders', { method: 'POST', json: { product_id: pid, payer_phone: phone } });
           const done = await pollTxn(order.txn_id);
           if (done.status === 'success') {
-            s.innerHTML = `<div class="center"><div class="bigicon">📦</div><h2>Paid — held in escrow</h2>
-              <p class="dim">The creator ships your order. Confirm delivery in Market → Your orders to release their money.</p>
-              <button class="primary" style="margin-top:14px" onclick="window.__closeSheet()">Done</button></div>`;
+            s.innerHTML = `<div class="center">${statusIc('s-ok', 'i-check')}<h2>Paid — held in escrow</h2>
+              <p class="dim">The creator ships your order. Confirm delivery in Market → Your orders to release their money.</p>${doneBtn()}</div>`;
           } else {
-            s.innerHTML = `<div class="center"><div class="bigicon">😕</div><h2>Payment ${done.status}</h2>
-              <button class="primary" style="margin-top:14px" onclick="window.__closeSheet()">Close</button></div>`;
+            s.innerHTML = `<div class="center">${statusIc('s-bad', 'i-x')}<h2>Payment ${done.status}</h2>${doneBtn('Close')}</div>`;
           }
           if (state.tab === 'market') renderMarket();
         } catch (err) {
-          s.innerHTML = `<div class="center"><h2>Error</h2><p class="dim">${esc(err.message)}</p>
-            <button class="primary" style="margin-top:14px" onclick="window.__closeSheet()">Close</button></div>`;
+          s.innerHTML = `<div class="center">${statusIc('s-bad', 'i-x')}<h2>Error</h2><p class="dim">${esc(err.message)}</p>${doneBtn('Close')}</div>`;
         }
       };
     };
@@ -411,6 +407,7 @@ async function renderWallet() {
         <b class="${e.amount > 0 ? 'ok' : ''}">${e.amount > 0 ? '+' : ''}${fmt(e.amount)}</b>
       </div>`).join('') || '<p class="dim">No activity yet. Tips land here instantly.</p>'}
     </div>
+    <p class="dim center" style="margin-top:14px"><a href="/privacy.html" style="color:var(--dim)">Privacy policy</a></p>
   </div>`;
   $('#wdbtn')?.addEventListener('click', async () => {
     const amount = Number($('#wdamount').value);
@@ -419,7 +416,7 @@ async function renderWallet() {
     try {
       const txn = await api('/api/withdrawals', { method: 'POST', json: { amount } });
       const done = await pollTxn(txn.id);
-      if (done.status === 'success') toast(`✅ ${fmt(amount)} RWF sent to ${me.phone}`);
+      if (done.status === 'success') toast(`${fmt(amount)} RWF sent to ${me.phone}`);
       else toast(`Cashout ${done.status}${done.fail_reason ? ': ' + done.fail_reason : ''}`);
     } catch (err) { toast(err.message); }
     renderWallet();
@@ -435,7 +432,7 @@ function renderUpload() {
       <label>Video file (from your phone camera or gallery)</label>
       <input type="file" id="vfile" accept="video/*">
       <label>Title</label>
-      <input id="vtitle" placeholder="e.g. Intore routine, maize spacing lesson…">
+      <input id="vtitle" placeholder="Give it a title people will tip for">
       <label>Feed</label>
       <select id="vkind">
         <option value="watch">Watch — entertainment feed</option>
@@ -447,7 +444,7 @@ function renderUpload() {
         <option value="fr">Français</option><option value="sw">Kiswahili</option>
       </select>
       <button class="primary" id="upbtn" style="margin-top:10px">Upload</button>
-      <p class="dim" style="margin-top:8px">The server recompresses every upload to H.264 480p ≈450 kbps so it streams on 3G.</p>
+      <p class="dim" style="margin-top:8px">Every upload is compressed for 3G so your viewers spend less data.</p>
     </div>
   </div>`;
   $('#upbtn').onclick = async () => {
@@ -462,7 +459,7 @@ function renderUpload() {
     btn.disabled = true; btn.textContent = 'Uploading & compressing…';
     try {
       const v = await api('/api/videos', { method: 'POST', body: fd });
-      toast(v.transcoded ? '✅ Uploaded and compressed for 3G' : '⚠️ Uploaded (ffmpeg missing — stored uncompressed)');
+      toast(v.transcoded ? 'Uploaded and compressed for 3G' : 'Uploaded (stored as-is — compression unavailable on this server)');
       setTab(v.kind);
     } catch (err) {
       toast(err.message);

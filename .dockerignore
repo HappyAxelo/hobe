@@ -1,0 +1,8 @@
+# flyctl launch added from .gitignore
+**/node_modules
+**/data
+**/test/tmpdata
+**/.env
+**/nohup.out
+**/*.log
+fly.toml

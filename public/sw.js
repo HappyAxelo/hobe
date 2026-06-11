@@ -1,5 +1,5 @@
 // Service worker: instant app shell on repeat visits + offline playback of saved videos.
-const SHELL = 'hobe-shell-v1';
+const SHELL = 'hobe-shell-v2';
 const VIDEOS = 'hobe-videos';
 const SHELL_FILES = ['/', '/index.html', '/app.js', '/style.css', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
 
@@ -29,14 +29,11 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Shell: cache first, refresh in background
+  // Shell: network first so UI updates reach phones immediately; cache as offline fallback
   e.respondWith(
-    caches.match(e.request).then((hit) => {
-      const refresh = fetch(e.request).then((res) => {
-        if (res.ok) caches.open(SHELL).then((c) => c.put(e.request, res.clone()));
-        return res;
-      }).catch(() => hit);
-      return hit || refresh;
-    }),
+    fetch(e.request).then((res) => {
+      if (res.ok) caches.open(SHELL).then((c) => c.put(e.request, res.clone()));
+      return res;
+    }).catch(() => caches.match(e.request)),
   );
 });
