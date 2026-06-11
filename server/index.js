@@ -9,38 +9,61 @@ import {
   confirmDelivery, refundOrder, startSettlementWorker,
 } from './money.js';
 import { transcode, probeDuration } from './transcode.js';
+import { signup, login, getSessionUser, deleteSession, publicUser } from './auth.js';
 
 const app = createApp();
 const videosDir = path.join(config.dataDir, 'videos');
 
-// ---------- demo auth ----------
-// Identity = X-User-Id header, set by the demo user switcher in the app.
-// Production replaces this with OTP-over-SMS login keyed on the MoMo number.
+// ---------- auth ----------
+// Session token in Authorization: Bearer <token>.
+// DEMO_AUTH=1 additionally allows the old X-User-Id header (local testing only).
 function currentUser(req) {
-  const id = Number(req.headers['x-user-id']);
-  if (!id) return null;
-  return db.prepare('SELECT * FROM users WHERE id=?').get(id) ?? null;
+  const bearer = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+  const fromSession = getSessionUser(bearer);
+  if (fromSession) return fromSession;
+  if (process.env.DEMO_AUTH === '1') {
+    const id = Number(req.headers['x-user-id']);
+    if (id) return db.prepare('SELECT * FROM users WHERE id=?').get(id) ?? null;
+  }
+  return null;
 }
 function requireUser(req) {
   const u = currentUser(req);
-  if (!u) throw Object.assign(new Error('Pick a user first (X-User-Id header)'), { status: 401 });
+  if (!u) throw Object.assign(new Error('Sign in first'), { status: 401 });
   return u;
 }
 
-// ---------- users ----------
-app.get('/api/users', (req, res) => {
-  sendJson(res, 200, db.prepare('SELECT id, name, handle, phone, role, bio, color FROM users ORDER BY id').all());
+app.post('/api/auth/signup', async (req, res) => {
+  const { user, token } = signup(req.body ?? {});
+  sendJson(res, 200, { token, user: { ...publicUser(user), phone: user.phone } });
 });
 
+app.post('/api/auth/login', async (req, res) => {
+  const { user, token } = login(req.body ?? {});
+  sendJson(res, 200, { token, user: { ...publicUser(user), phone: user.phone } });
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  deleteSession(req.headers.authorization?.match(/^Bearer (.+)$/)?.[1]);
+  sendJson(res, 200, { ok: true });
+});
+
+app.get('/api/me', (req, res) => {
+  const u = currentUser(req);
+  if (!u) return sendJson(res, 401, { error: 'Not signed in' });
+  sendJson(res, 200, { ...publicUser(u), phone: u.phone });
+});
+
+// ---------- creators (public — no phone numbers) ----------
 app.get('/api/creators/:id', (req, res) => {
-  const creator = db.prepare('SELECT id, name, handle, phone, role, bio, color FROM users WHERE id=?').get(req.params.id);
+  const creator = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
   if (!creator) return sendJson(res, 404, { error: 'Not found' });
   const videos = db.prepare('SELECT * FROM videos WHERE user_id=? ORDER BY created_at DESC').all(creator.id);
   const products = db.prepare('SELECT * FROM products WHERE creator_id=? AND active=1').all(creator.id);
   const tipsTotal = Number(db.prepare(`
     SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE type='tip' AND status='success' AND payee_user_id=?
   `).get(creator.id).s);
-  sendJson(res, 200, { ...creator, videos, products, tips_total: tipsTotal });
+  sendJson(res, 200, { ...publicUser(creator), videos, products, tips_total: tipsTotal });
 });
 
 // ---------- feed ----------
@@ -72,7 +95,7 @@ app.post('/api/videos/:id/like', (req, res) => {
   sendJson(res, 200, { ok: true, likes: Number(db.prepare('SELECT likes FROM videos WHERE id=?').get(req.params.id)?.likes ?? 0) });
 });
 
-// ---------- upload ----------
+// ---------- upload (signed-in users only) ----------
 app.post('/api/videos', async (req, res) => {
   const user = requireUser(req);
   const { fields, file } = await parseUpload(req, path.join(config.dataDir, 'tmp'));
@@ -92,7 +115,7 @@ app.post('/api/videos', async (req, res) => {
   sendJson(res, 200, { ...db.prepare('SELECT * FROM videos WHERE id=?').get(Number(info.lastInsertRowid)), transcoded });
 });
 
-// ---------- money: tips ----------
+// ---------- money: tips (no login needed — anyone with a MoMo number can tip) ----------
 app.post('/api/tips', async (req, res) => {
   const user = currentUser(req);
   const { video_id, amount, payer_phone } = req.body ?? {};
@@ -108,7 +131,7 @@ app.get('/api/transactions/:id', (req, res) => {
   sendJson(res, 200, txn);
 });
 
-// ---------- money: wallet & withdrawals ----------
+// ---------- money: wallet & withdrawals (signed-in) ----------
 app.get('/api/wallet', (req, res) => {
   const user = requireUser(req);
   const account = `user:${user.id}`;
@@ -126,6 +149,7 @@ app.get('/api/wallet', (req, res) => {
 
 app.post('/api/withdrawals', async (req, res) => {
   const user = requireUser(req);
+  // Payout binding: money can only leave to the phone this account signed up with.
   const txn = await startWithdrawal({ userId: user.id, amount: Number(req.body?.amount) });
   sendJson(res, 202, txn);
 });
@@ -149,7 +173,6 @@ app.post('/api/orders', async (req, res) => {
 
 app.get('/api/orders', (req, res) => {
   const user = requireUser(req);
-  // Orders you placed, plus (if creator) orders for your products
   const rows = db.prepare(`
     SELECT o.*, p.title AS product_title, p.creator_id FROM orders o
     JOIN products p ON p.id = o.product_id
@@ -160,11 +183,15 @@ app.get('/api/orders', (req, res) => {
 });
 
 app.post('/api/orders/:id/confirm-delivery', async (req, res) => {
-  // v1: buyer (or admin demo) taps "I received it". Production adds courier/OTP proof.
+  const user = requireUser(req);
+  const order = db.prepare('SELECT * FROM orders WHERE id=?').get(Number(req.params.id));
+  if (!order) return sendJson(res, 404, { error: 'Not found' });
+  if (order.buyer_user_id !== user.id) return sendJson(res, 403, { error: 'Only the buyer can confirm delivery' });
   sendJson(res, 200, confirmDelivery(Number(req.params.id)));
 });
 
 app.post('/api/orders/:id/refund', async (req, res) => {
+  requireUser(req); // v1: any signed-in party can trigger; production restricts to admin/dispute flow
   sendJson(res, 200, refundOrder(Number(req.params.id)));
 });
 
@@ -178,7 +205,7 @@ app.post('/api/videos/:id/report', async (req, res) => {
   sendJson(res, 200, { ok: true });
 });
 
-// ---------- platform stats (demo dashboard) ----------
+// ---------- platform stats ----------
 app.get('/api/stats', (req, res) => {
   sendJson(res, 200, {
     provider: provider.name,

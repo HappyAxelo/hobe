@@ -8,14 +8,14 @@ const icon = (id, cls = 'ic') => `<svg class="${cls}"><use href="#${id}"/></svg>
 const statusIc = (kind, id) => `<div class="statusic ${kind}"><svg><use href="#${id}"/></svg></div>`;
 
 // ---------- state ----------
-let users = [];
-let me = null; // current demo user
+let me = null; // signed-in user (or null)
+let token = localStorage.getItem('hobe_token') || null;
 const state = { tab: 'watch' };
 
 // ---------- api ----------
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
-  if (me) headers['X-User-Id'] = me.id;
+  if (token) headers.Authorization = `Bearer ${token}`;
   if (opts.json) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(opts.json); }
   const res = await fetch(path, { ...opts, headers });
   const body = await res.json().catch(() => ({}));
@@ -54,36 +54,82 @@ function closeSheet() {
 window.__closeSheet = closeSheet;
 const doneBtn = (label = 'Done') => `<button class="primary" style="margin-top:14px" onclick="window.__closeSheet()">${label}</button>`;
 
-// ---------- user switcher (demo auth) ----------
-async function loadUsers() {
-  users = await api('/api/users');
-  const saved = Number(localStorage.getItem('hobe_user'));
-  me = users.find((u) => u.id === saved) || users.find((u) => u.role === 'viewer') || users[0];
+// ---------- auth ----------
+async function fetchMe() {
+  if (!token) { me = null; renderUserPill(); return; }
+  try { me = await api('/api/me'); }
+  catch { me = null; token = null; localStorage.removeItem('hobe_token'); }
+  renderUserPill();
+}
+function setAuth(r) {
+  token = r.token; me = r.user;
+  localStorage.setItem('hobe_token', token);
   renderUserPill();
 }
 function renderUserPill() {
   $('#userpill').textContent = me ? me.name.split(' ')[0] : 'Sign in';
 }
-$('#userpill').onclick = () => {
-  openSheet(`
-    <h2>Who are you?</h2>
-    <p class="dim">Demo login — production uses a one-time code sent to your MoMo number.</p>
-    <div id="userlist" style="margin-top:10px">${users.map((u) => `
-      <button class="ghost" style="width:100%;margin:5px 0;display:flex;justify-content:space-between" data-uid="${u.id}">
-        <span>${esc(u.name)} <span class="dim">@${u.handle}</span></span>
-        <span class="dim">${u.role}</span>
-      </button>`).join('')}
-    </div>`);
-  $('#userlist').onclick = (e) => {
-    const id = e.target.closest('[data-uid]')?.dataset.uid;
-    if (!id) return;
-    me = users.find((u) => u.id === Number(id));
-    localStorage.setItem('hobe_user', me.id);
-    renderUserPill();
-    closeSheet();
-    render();
+
+function openLoginSheet(afterLogin) {
+  const s = openSheet(`
+    <h2>Sign in</h2>
+    <p class="dim">Your number is your account — it's where your money goes.</p>
+    <label>Phone number</label>
+    <input id="lphone" inputmode="tel" placeholder="07XX XXX XXX" autocomplete="tel">
+    <label>Password</label>
+    <input id="lpass" type="password" autocomplete="current-password">
+    <button class="primary" id="dologin" style="margin-top:10px">Sign in</button>
+    <p class="dim center" style="margin-top:14px">New on Hobe? <a href="#" id="gosignup" style="color:var(--gold)">Create an account</a></p>
+  `);
+  $('#dologin').onclick = async () => {
+    try {
+      setAuth(await api('/api/auth/login', { method: 'POST', json: { phone: $('#lphone').value, password: $('#lpass').value } }));
+      closeSheet(); toast(`Welcome back, ${me.name.split(' ')[0]}`);
+      (afterLogin ?? render)();
+    } catch (err) { toast(err.message); }
   };
-};
+  $('#gosignup').onclick = (e) => { e.preventDefault(); openSignupSheet(afterLogin); };
+}
+
+function openSignupSheet(afterLogin) {
+  openSheet(`
+    <h2>Create your account</h2>
+    <p class="dim">Free. Your MoMo number becomes your payout wallet.</p>
+    <label>Your name</label>
+    <input id="sname" placeholder="Name people will see" autocomplete="name">
+    <label>Phone number (MTN or Airtel)</label>
+    <input id="sphone" inputmode="tel" placeholder="07XX XXX XXX" autocomplete="tel">
+    <label>Password</label>
+    <input id="spass" type="password" placeholder="At least 6 characters" autocomplete="new-password">
+    <button class="primary" id="dosignup" style="margin-top:10px">Create account</button>
+    <p class="dim center" style="margin-top:14px">Already have one? <a href="#" id="gologin" style="color:var(--gold)">Sign in</a></p>
+  `);
+  $('#dosignup').onclick = async () => {
+    try {
+      setAuth(await api('/api/auth/signup', { method: 'POST', json: { name: $('#sname').value, phone: $('#sphone').value, password: $('#spass').value } }));
+      closeSheet(); toast(`Karibu, ${me.name.split(' ')[0]}! Your wallet is ready.`);
+      (afterLogin ?? render)();
+    } catch (err) { toast(err.message); }
+  };
+  $('#gologin').onclick = (e) => { e.preventDefault(); openLoginSheet(afterLogin); };
+}
+
+function openAccountSheet() {
+  openSheet(`
+    <h2>${esc(me.name)}</h2>
+    <p class="dim">@${me.handle} · ${esc(me.phone)}</p>
+    <button class="ghost" id="dologout" style="width:100%;margin-top:14px">Log out</button>
+    <p class="dim center" style="margin-top:14px"><a href="/privacy.html" style="color:var(--dim)">Privacy policy</a></p>
+  `);
+  $('#dologout').onclick = async () => {
+    await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    token = null; me = null;
+    localStorage.removeItem('hobe_token');
+    renderUserPill(); closeSheet(); render();
+  };
+}
+
+$('#userpill').onclick = () => (me ? openAccountSheet() : openLoginSheet());
 
 // ---------- polling a transaction to completion ----------
 function pollTxn(id, { timeoutMs = 30000 } = {}) {
@@ -138,7 +184,7 @@ function slideHtml(v, kind) {
   const init = v.creator_name.split(' ').map((w) => w[0]).slice(0, 2).join('');
   const langNames = { rw: 'Kinyarwanda', en: 'English', fr: 'Français', sw: 'Kiswahili' };
   return `
-  <section class="slide" data-vid="${v.id}" data-creator="${v.user_id}">
+  <section class="slide" data-vid="${v.id}" data-creator="${v.user_id}" data-cname="${esc(v.creator_name)}">
     <video src="/videos/${v.filename}" loop playsinline preload="${kind === 'watch' ? 'auto' : 'metadata'}" muted></video>
     <div class="overlay">
       <div class="who" data-act="profile">
@@ -178,7 +224,7 @@ async function feedClick(e) {
     v.muted = !v.muted;
     $('use', btn).setAttribute('href', v.muted ? '#i-mute' : '#i-sound');
   } else if (act === 'tip') {
-    openTipSheet(videoId, slide.dataset.creator);
+    openTipSheet(videoId, slide.dataset.cname);
   } else if (act === 'share') {
     shareVideo(slide);
   } else if (act === 'report') {
@@ -193,17 +239,16 @@ async function feedClick(e) {
 }
 
 // ---------- tipping ----------
-function openTipSheet(videoId, creatorId) {
-  const creator = users.find((u) => u.id === Number(creatorId));
+function openTipSheet(videoId, creatorName) {
   let amount = 500;
   const s = openSheet(`
-    <h2>Tip ${creator ? esc(creator.name) : 'creator'}</h2>
+    <h2>Tip ${esc(creatorName || 'this creator')}</h2>
     <p class="dim">80% goes to the creator, instantly into their Hobe wallet.</p>
     <div class="chips">
       ${[100, 200, 500, 1000, 2000].map((a) => `<button class="chip ${a === 500 ? 'on' : ''}" data-amt="${a}">${fmt(a)}</button>`).join('')}
     </div>
     <label>Pay from MoMo number</label>
-    <input id="tipphone" value="${me?.phone ?? ''}" inputmode="tel">
+    <input id="tipphone" inputmode="tel" value="${me?.phone ?? ''}" placeholder="07XX XXX XXX">
     <button class="primary" id="sendtip" style="margin-top:8px">Send ${fmt(amount)} RWF</button>
   `);
   $('.chips', s).onclick = (e) => {
@@ -225,7 +270,7 @@ function openTipSheet(videoId, creatorId) {
         const cut = amount - Math.floor(amount * 0.15) - Math.floor(amount * 0.05); // mirrors server split
         s.innerHTML = `<div class="center">${statusIc('s-ok', 'i-check')}
           <h2>Murakoze! Tip sent</h2>
-          <p class="dim">${fmt(amount)} RWF sent — ${creator ? esc(creator.name) : 'the creator'} receives <b class="ok">${fmt(cut)} RWF</b> in their wallet right now.</p>
+          <p class="dim">${fmt(amount)} RWF sent — ${esc(creatorName || 'the creator')} receives <b class="ok">${fmt(cut)} RWF</b> in their wallet right now.</p>
           ${doneBtn()}</div>`;
       } else if (done.status === 'failed') {
         s.innerHTML = `<div class="center">${statusIc('s-bad', 'i-x')}<h2>Payment failed</h2>
@@ -240,7 +285,7 @@ function openTipSheet(videoId, creatorId) {
   };
 }
 
-// ---------- share (offline P2P, honest version) ----------
+// ---------- share ----------
 async function shareVideo(slide) {
   const src = $('video', slide).getAttribute('src');
   const title = $('.vtitle', slide).textContent;
@@ -303,7 +348,7 @@ function productCard(p) {
 async function renderMarket() {
   const products = await api('/api/products');
   let orders = [];
-  try { orders = await api('/api/orders'); } catch { /* not signed in */ }
+  if (me) { try { orders = await api('/api/orders'); } catch { /* session expired */ } }
   view.innerHTML = `
   <div class="panel">
     <h2>Market</h2>
@@ -335,12 +380,13 @@ function orderCard(o) {
 function bindBuyButtons() {
   view.querySelectorAll('.buybtn').forEach((b) => {
     b.onclick = async () => {
+      if (!me) return openLoginSheet(() => renderMarket());
       const pid = Number(b.closest('[data-pid]').dataset.pid);
       const s = openSheet(`
         <h2>Confirm purchase</h2>
         <p class="dim">Payment is held in escrow until you confirm delivery.</p>
         <label>Pay from MoMo number</label>
-        <input id="buyphone" value="${me?.phone ?? ''}" inputmode="tel">
+        <input id="buyphone" inputmode="tel" value="${me?.phone ?? ''}">
         <button class="primary" id="dobuy" style="margin-top:8px">Pay with MoMo</button>`);
       $('#dobuy').onclick = async () => {
         const phone = $('#buyphone').value.trim();
@@ -378,7 +424,12 @@ function bindOrderButtons() {
 
 // ---------- wallet ----------
 async function renderWallet() {
-  if (!me) { view.innerHTML = '<div class="empty">Pick a user first.</div>'; return; }
+  if (!me) {
+    view.innerHTML = `<div class="empty"><p>Your wallet lives behind your account.</p>
+      <button class="primary" id="walletlogin" style="max-width:280px;margin:16px auto 0">Sign in</button></div>`;
+    $('#walletlogin').onclick = () => openLoginSheet(() => renderWallet());
+    return;
+  }
   let w;
   try { w = await api('/api/wallet'); } catch (err) {
     view.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return;
@@ -405,9 +456,8 @@ async function renderWallet() {
       ${w.entries.map((e) => `<div class="entry">
         <span>${kindLabel[e.kind] || e.kind}<br><span class="dim">${new Date(e.created_at * 1000).toLocaleString()}</span></span>
         <b class="${e.amount > 0 ? 'ok' : ''}">${e.amount > 0 ? '+' : ''}${fmt(e.amount)}</b>
-      </div>`).join('') || '<p class="dim">No activity yet. Tips land here instantly.</p>'}
+      </div>`).join('') || '<p class="dim">No activity yet. Tips on your videos land here instantly.</p>'}
     </div>
-    <p class="dim center" style="margin-top:14px"><a href="/privacy.html" style="color:var(--dim)">Privacy policy</a></p>
   </div>`;
   $('#wdbtn')?.addEventListener('click', async () => {
     const amount = Number($('#wdamount').value);
@@ -425,6 +475,12 @@ async function renderWallet() {
 
 // ---------- upload ----------
 function renderUpload() {
+  if (!me) {
+    view.innerHTML = `<div class="empty"><p>Sign in to upload — tips on your videos go straight to your MoMo number.</p>
+      <button class="primary" id="uploadlogin" style="max-width:280px;margin:16px auto 0">Sign in</button></div>`;
+    $('#uploadlogin').onclick = () => openLoginSheet(() => renderUpload());
+    return;
+  }
   view.innerHTML = `
   <div class="panel">
     <h2>Upload</h2>
@@ -492,6 +548,4 @@ function esc(s) {
 
 // ---------- boot ----------
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-loadUsers().then(() => render()).catch(() => {
-  view.innerHTML = '<div class="empty">Cannot reach the server. Is it running?</div>';
-});
+fetchMe().finally(() => render());

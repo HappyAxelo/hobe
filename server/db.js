@@ -8,7 +8,7 @@ fs.mkdirSync(config.dataDir, { recursive: true });
 fs.mkdirSync(path.join(config.dataDir, 'videos'), { recursive: true });
 
 export const db = new DatabaseSync(path.join(config.dataDir, 'hobe.db'));
-try { db.exec('PRAGMA journal_mode = WAL'); } catch { /* some filesystems cannot WAL; default journal is fine */ }
+try { db.exec('PRAGMA journal_mode = WAL'); } catch { /* some filesystems cannot WAL */ }
 db.exec('PRAGMA foreign_keys = ON');
 
 db.exec(`
@@ -20,6 +20,14 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL DEFAULT 'viewer',
   bio TEXT DEFAULT '',
   color TEXT DEFAULT '#7c5cff',
+  password_hash TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  expires_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -86,10 +94,7 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
-`);
 
-// Content reports (Google Play UGC policy requires in-app reporting)
-db.exec(`
 CREATE TABLE IF NOT EXISTS reports (
   id INTEGER PRIMARY KEY,
   video_id INTEGER NOT NULL REFERENCES videos(id),
@@ -99,6 +104,10 @@ CREATE TABLE IF NOT EXISTS reports (
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 `);
+
+// Migrations for databases created before these columns/tables existed
+// (e.g. the live Fly volume). Safe to re-run.
+try { db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch { /* already there */ }
 
 export function getBalance(account) {
   const row = db.prepare('SELECT COALESCE(SUM(amount),0) AS bal FROM ledger WHERE account = ?').get(account);
