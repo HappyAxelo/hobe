@@ -1,0 +1,17 @@
+# Litestream replicates the SQLite ledger to R2 continuously and restores it on
+# boot. This is what makes the database survive on a host with an ephemeral disk
+# (Koyeb's free instance wipes local writes on every redeploy).
+#
+# All values come from the same R2_* env vars the app uses — set them once on
+# the host. Litestream expands ${VAR} references below.
+dbs:
+  - path: /app/data/hobe.db
+    replicas:
+      - type: s3
+        endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+        bucket: ${R2_BUCKET}
+        path: litestream/hobe.db
+        region: auto
+        access-key-id: ${R2_ACCESS_KEY_ID}
+        secret-access-key: ${R2_SECRET_ACCESS_KEY}
+        force-path-style: true

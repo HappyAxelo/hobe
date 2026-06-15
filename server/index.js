@@ -11,10 +11,35 @@ import {
 } from './money.js';
 import { transcode, probeDuration, hasFfmpeg } from './transcode.js';
 import { signup, login, getSessionUser, deleteSession, publicUser } from './auth.js';
+import { storageMode, putObject, deleteObject, publicUrl, getObject } from './storage.js';
 
 const app = createApp();
 const videosDir = path.join(config.dataDir, 'videos');
 const avatarsDir = path.join(config.dataDir, 'avatars');
+
+// Serve a media object from R2: redirect to the public URL when one is
+// configured (so bandwidth never touches this server), otherwise proxy the
+// bytes through, passing the Range header for video seeking.
+async function serveFromR2(req, res, key) {
+  const pub = publicUrl(key);
+  if (pub) {
+    res.writeHead(302, { Location: pub, 'Cache-Control': 'public, max-age=86400' });
+    return res.end();
+  }
+  const upstream = await getObject(key, req.headers.range);
+  if (upstream.status >= 400) {
+    res.writeHead(upstream.status === 404 ? 404 : 502);
+    return res.end();
+  }
+  const headers = { 'Cache-Control': 'public, max-age=86400' };
+  for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag']) {
+    const v = upstream.headers.get(h);
+    if (v) headers[h] = v;
+  }
+  res.writeHead(upstream.status, headers);
+  const { Readable } = await import('node:stream');
+  Readable.fromWeb(upstream.body).pipe(res);
+}
 
 // ---------- auth ----------
 function currentUser(req) {
@@ -75,9 +100,17 @@ app.post('/api/me/avatar', async (req, res) => {
   }
   fs.rmSync(file.path, { force: true });
 
+  if (storageMode === 'r2') {
+    await putObject(`avatars/${filename}`, fs.readFileSync(outPath), 'image/jpeg');
+    fs.rmSync(outPath, { force: true }); // R2 holds the canonical copy now
+  }
+
   const old = db.prepare('SELECT avatar FROM users WHERE id=?').get(user.id)?.avatar;
   db.prepare('UPDATE users SET avatar=? WHERE id=?').run(filename, user.id);
-  if (old) fs.rm(path.join(avatarsDir, String(old)), { force: true }, () => {});
+  if (old) {
+    if (storageMode === 'r2') deleteObject(`avatars/${old}`).catch(() => {});
+    else fs.rm(path.join(avatarsDir, String(old)), { force: true }, () => {});
+  }
   sendJson(res, 200, { avatar: filename });
 });
 
@@ -134,6 +167,11 @@ app.post('/api/videos', async (req, res) => {
   const duration = await probeDuration(outPath);
   const size = fs.statSync(outPath).size;
 
+  if (storageMode === 'r2') {
+    await putObject(`videos/${filename}`, fs.readFileSync(outPath), 'video/mp4');
+    fs.rmSync(outPath, { force: true }); // R2 holds the canonical copy now
+  }
+
   const info = db.prepare(`
     INSERT INTO videos (user_id, title, kind, lang, filename, duration_s, size_bytes)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -163,7 +201,8 @@ app.post('/api/videos/:id/delete', async (req, res) => {
   const video = ownVideo(req);
   // Soft delete: the row stays (tips reference it in the ledger), the file goes.
   db.prepare('UPDATE videos SET deleted=1 WHERE id=?').run(video.id);
-  fs.rm(path.join(videosDir, String(video.filename)), { force: true }, () => {});
+  if (storageMode === 'r2') deleteObject(`videos/${video.filename}`).catch(() => {});
+  else fs.rm(path.join(videosDir, String(video.filename)), { force: true }, () => {});
   sendJson(res, 200, { ok: true });
 });
 
@@ -268,14 +307,20 @@ app.get('/api/stats', (req, res) => {
 });
 
 // ---------- static ----------
-app.static('/videos/', videosDir, 365 * 24 * 3600);
-app.static('/avatars/', avatarsDir, 30 * 24 * 3600);
+if (storageMode === 'r2') {
+  // Media lives in R2; redirect or proxy from there.
+  app.get('/videos/:file', (req, res) => serveFromR2(req, res, `videos/${req.params.file}`));
+  app.get('/avatars/:file', (req, res) => serveFromR2(req, res, `avatars/${req.params.file}`));
+} else {
+  app.static('/videos/', videosDir, 365 * 24 * 3600);
+  app.static('/avatars/', avatarsDir, 30 * 24 * 3600);
+}
 app.static('/', path.join(config.root, 'public'), 3600);
 
 if (process.env.NODE_ENV !== 'test') {
   startSettlementWorker(1000);
   app.listen(config.port, () => {
-    console.log(`Hobe running on http://localhost:${config.port}  (MoMo provider: ${provider.name})`);
+    console.log(`Hobe running on http://localhost:${config.port}  (MoMo provider: ${provider.name}, storage: ${storageMode})`);
   });
 }
 

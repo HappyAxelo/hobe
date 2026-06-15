@@ -7,6 +7,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { db } from '../server/db.js';
 import { config } from '../server/config.js';
+import { storageMode, putObject } from '../server/storage.js';
 
 const videosDir = path.join(config.dataDir, 'videos');
 fs.mkdirSync(videosDir, { recursive: true });
@@ -94,6 +95,16 @@ for (const [handle, title, kind, lang, color, label] of videos) {
 const insProduct = db.prepare('INSERT INTO products (creator_id, title, description, price) VALUES (?,?,?,?)');
 for (const [handle, title, desc, price] of products) {
   insProduct.run(idByHandle[handle], title, desc, price);
+}
+
+// In R2 mode the app serves video from the bucket, so push the demo clips up
+// once at seed time. Otherwise the freshly deployed feed would show 404s.
+if (storageMode === 'r2') {
+  for (const f of fs.readdirSync(videosDir)) {
+    if (!f.endsWith('.mp4')) continue;
+    await putObject(`videos/${f}`, fs.readFileSync(path.join(videosDir, f)), 'video/mp4');
+  }
+  console.log('Uploaded demo clips to R2.');
 }
 
 console.log(`Seeded ${users.length} users, ${videos.length} videos, ${products.length} products.`);
