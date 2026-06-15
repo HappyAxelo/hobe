@@ -63,3 +63,57 @@ export async function probeDuration(file) {
     p.on('exit', () => resolve(parseFloat(out) || 0));
   });
 }
+
+// ---- Music / image posts ----
+const PORTRAIT_SCALE = "scale='if(gt(a,480/854),480,-2)':'if(gt(a,480/854),-2,854)',fps=30";
+const IMAGE_FIT = "scale=480:854:force_original_aspect_ratio=decrease,pad=480:854:(ow-iw)/2:(oh-ih)/2:black,fps=30,format=yuv420p";
+
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const p = spawn('ffmpeg', args);
+    let err = '';
+    p.stderr.on('data', (d) => { err += d; });
+    p.on('error', reject);
+    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${err.slice(-800)}`))));
+  });
+}
+
+// Replace a video's audio with the chosen song, keeping our 3G compression.
+export async function muxAudio(videoPath, audioPath, outPath) {
+  if (!(await hasFfmpeg())) { fs.copyFileSync(videoPath, outPath); return { transcoded: false }; }
+  await runFfmpeg([
+    '-y', '-i', videoPath, '-i', audioPath,
+    '-map', '0:v:0', '-map', '1:a:0',
+    '-vf', PORTRAIT_SCALE,
+    '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.0',
+    '-crf', '27', '-maxrate', '450k', '-bufsize', '900k', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '48k', '-ac', '1', '-ar', '44100',
+    '-shortest', '-movflags', '+faststart', outPath,
+  ]);
+  return { transcoded: true };
+}
+
+// Turn a still image into a portrait video, optionally over a soundtrack.
+// Without audio it produces a short silent clip so it still plays in the feed.
+export async function imageToVideo(imagePath, audioPath, outPath, { maxSeconds = 60, silentSeconds = 8 } = {}) {
+  if (!(await hasFfmpeg())) throw Object.assign(new Error('Image posts need video support on the server'), { status: 400 });
+  if (audioPath) {
+    await runFfmpeg([
+      '-y', '-loop', '1', '-i', imagePath, '-i', audioPath,
+      '-vf', IMAGE_FIT,
+      '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.0',
+      '-crf', '27', '-maxrate', '450k', '-bufsize', '900k',
+      '-c:a', 'aac', '-b:a', '48k', '-ac', '1', '-ar', '44100',
+      '-t', String(maxSeconds), '-shortest', '-movflags', '+faststart', outPath,
+    ]);
+  } else {
+    await runFfmpeg([
+      '-y', '-loop', '1', '-i', imagePath,
+      '-vf', IMAGE_FIT,
+      '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.0',
+      '-crf', '27', '-maxrate', '450k', '-bufsize', '900k',
+      '-t', String(silentSeconds), '-movflags', '+faststart', outPath,
+    ]);
+  }
+  return { transcoded: true };
+}

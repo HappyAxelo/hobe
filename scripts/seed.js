@@ -12,6 +12,13 @@ import { storageMode, putObject } from '../server/storage.js';
 const videosDir = path.join(config.dataDir, 'videos');
 fs.mkdirSync(videosDir, { recursive: true });
 
+// Demo content only loads when explicitly asked for (SEED_DEMO=1). In production
+// the app starts empty so real users and videos are all that ever appear.
+if (process.env.SEED_DEMO !== '1') {
+  console.log('SEED_DEMO not set — starting with an empty database (no demo content).');
+  process.exit(0);
+}
+
 const users = [
   { name: 'Aline Uwase', handle: 'aline.dance', phone: '250788111111', role: 'creator', color: '#ff5c8a', bio: "Dancer from Kigali. Tips fund our crew's studio time." },
   { name: 'Eric Mugisha', handle: 'eric.farms', phone: '250788222222', role: 'creator', color: '#39c46f', bio: '60-second farming lessons in Kinyarwanda.' },

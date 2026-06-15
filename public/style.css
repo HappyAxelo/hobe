@@ -187,3 +187,71 @@ img.avatar { border-radius: 50%; border: 2px solid rgba(255,255,255,.85); flex: 
   display: flex; align-items: center; justify-content: center; padding: 0;
 }
 .photobtn svg { width: 14px; height: 14px; fill: currentColor; }
+
+/* repost / save active states on the feed rail */
+.rail button.on { color: var(--gold); }
+.rail button.liked { color: var(--heart); }
+.repost-row { cursor: pointer; }
+
+/* media-type segmented control on the upload screen */
+.seg { display: flex; gap: 8px; margin: 4px 0 8px; }
+.seg button {
+  flex: 1; padding: 10px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--card2); color: var(--dim); font-weight: 600; font-size: 14px;
+}
+.seg button.on { color: #0a0b0f; background: var(--grad); border-color: transparent; }
+#audiopick { display: inline-block; padding: 8px 12px; }
+
+/* ===================== premium polish ===================== */
+:root {
+  --bg: #08090d;
+  --card: #15171f; --card2: #1c2029; --line: #2a2f3d;
+  --shadow: 0 8px 30px rgba(0,0,0,.45);
+  --glow: 0 6px 22px rgba(255,176,46,.42);
+}
+body {
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+  background:
+    radial-gradient(120% 70% at 85% -10%, rgba(255,157,46,.10), transparent 60%),
+    radial-gradient(90% 60% at -10% 0%, rgba(255,198,46,.06), transparent 55%),
+    var(--bg);
+}
+.logo {
+  background: var(--grad); -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; text-shadow: none;
+}
+.logodot { -webkit-text-fill-color: var(--gold); }
+#topbar { background: linear-gradient(rgba(8,9,13,.92), rgba(8,9,13,0)); backdrop-filter: blur(3px); }
+
+.panel h2 { font-size: 21px; font-weight: 800; letter-spacing: -.4px; }
+.card {
+  background: linear-gradient(180deg, var(--card2), var(--card));
+  border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow);
+}
+button.primary {
+  border-radius: 14px; box-shadow: var(--glow); letter-spacing: .2px;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+button.primary:active { transform: translateY(1px) scale(.99); }
+button.ghost { border-radius: 12px; transition: background .15s, border-color .15s; }
+button.ghost:active { background: var(--line); }
+input, select { background: #0c0e13; border-radius: 12px; transition: border-color .15s, box-shadow .15s; }
+input:focus, select:focus { box-shadow: 0 0 0 3px rgba(255,198,46,.15); }
+
+#tabs { background: rgba(8,9,13,.86); backdrop-filter: blur(14px); border-top: 1px solid rgba(255,255,255,.06); }
+.tab.fab { border-radius: 18px; box-shadow: var(--glow); transition: transform .12s; }
+.tab.fab:active { transform: scale(.95); }
+
+.rail button { background: rgba(12,14,19,.42); border: 1px solid rgba(255,255,255,.08); transition: transform .12s, color .15s, border-color .15s; }
+.rail button:active { transform: scale(.9); }
+.rail .tipbtn { border: none; box-shadow: var(--glow); }
+.rail button.on { color: var(--gold); border-color: rgba(255,198,46,.45); }
+
+.pill { background: rgba(20,22,29,.6); border: 1px solid rgba(255,255,255,.1); }
+.sheet { background: linear-gradient(180deg, var(--card2), var(--card)); border-radius: 22px 22px 0 0; box-shadow: 0 -10px 40px rgba(0,0,0,.55); }
+.chip { background: #0c0e13; }
+.avatar { box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+
+/* gentle entrance for panel cards */
+.panel .card { animation: rise .28s ease both; }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }

@@ -136,7 +136,9 @@ function openAccountSheet() {
       </div>
     </div>
     <input type="file" id="avfile" accept="image/*" style="display:none">
-    <button class="ghost" id="myprofile" style="width:100%;margin-top:16px">My videos & profile</button>
+    ${me.avatar ? '' : '<button class="primary" id="addphoto" style="width:100%;margin-top:14px">Add a profile photo</button>'}
+    <button class="ghost" id="myprofile" style="width:100%;margin-top:10px">My videos & profile</button>
+    <button class="ghost" id="savedvids" style="width:100%;margin-top:8px">Saved videos</button>
     <button class="ghost" id="dologout" style="width:100%;margin-top:8px">Log out</button>
     <p class="dim center" style="margin-top:14px"><a href="/privacy.html" style="color:var(--dim)">Privacy policy</a></p>
   `);
@@ -157,7 +159,9 @@ function openAccountSheet() {
       $('#avwrap').style.opacity = '1';
     }
   };
+  $('#addphoto')?.addEventListener('click', () => $('#avfile').click());
   $('#myprofile').onclick = () => { closeSheet(); renderProfile(me.id); };
+  $('#savedvids').onclick = () => { closeSheet(); renderSaved(); };
   $('#dologout').onclick = async () => {
     await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
     token = null; me = null;
@@ -188,12 +192,8 @@ function pollTxn(id, { timeoutMs = 30000 } = {}) {
 // ---------- feed ----------
 let observer = null;
 
-async function renderFeed(kind) {
-  const vids = await api(`/api/feed?kind=${kind}`);
-  if (!vids.length) {
-    view.innerHTML = `<div class="empty"><p>No videos yet.</p><p>Tap the + button to upload the first one.</p></div>`;
-    return;
-  }
+function mountFeed(vids, kind, emptyHtml) {
+  if (!vids.length) { view.innerHTML = emptyHtml; return; }
   view.innerHTML = `<div class="feed">${vids.map((v) => slideHtml(v, kind)).join('')}</div>`;
 
   observer?.disconnect();
@@ -218,6 +218,17 @@ async function renderFeed(kind) {
   $('.feed').onclick = feedClick;
 }
 
+async function renderFeed(kind) {
+  mountFeed(await api(`/api/feed?kind=${kind}`), kind,
+    `<div class="empty"><p>No videos yet.</p><p>Tap the + button to upload the first one.</p></div>`);
+}
+
+async function renderSaved() {
+  if (!me) return openLoginSheet(() => renderSaved());
+  mountFeed(await api('/api/saved'), 'watch',
+    `<div class="empty"><p>No saved videos yet.</p><p>Tap the bookmark on any video to save it here.</p></div>`);
+}
+
 function slideHtml(v, kind) {
   const langNames = { rw: 'Kinyarwanda', en: 'English', fr: 'Français', sw: 'Kiswahili' };
   return `
@@ -234,6 +245,8 @@ function slideHtml(v, kind) {
     <div class="rail">
       <button data-act="tip" class="tipbtn"><span>RWF</span><span class="cnt">tip</span></button>
       <button data-act="like">${icon('i-heart')}<span class="cnt">${fmt(v.likes)}</span></button>
+      <button data-act="save" class="${v.saved ? 'on' : ''}">${icon('i-bookmark')}<span class="cnt">save</span></button>
+      <button data-act="repost" class="${v.reposted ? 'on' : ''}">${icon('i-repost')}<span class="cnt">${fmt(v.repost_count || 0)}</span></button>
       <button data-act="sound">${icon('i-mute')}</button>
       <button data-act="share">${icon('i-share')}<span class="cnt">share</span></button>
       <button data-act="report" title="Report this video">${icon('i-flag')}</button>
@@ -256,6 +269,21 @@ async function feedClick(e) {
     const r = await api(`/api/videos/${videoId}/like`, { method: 'POST' });
     $('.cnt', btn).textContent = fmt(r.likes);
     btn.classList.add('liked');
+  } else if (act === 'save') {
+    if (!me) return openLoginSheet();
+    try {
+      const r = await api(`/api/videos/${videoId}/save`, { method: 'POST' });
+      btn.classList.toggle('on', r.saved);
+      toast(r.saved ? 'Saved to your collection' : 'Removed from saved');
+    } catch (err) { toast(err.message); }
+  } else if (act === 'repost') {
+    if (!me) return openLoginSheet();
+    try {
+      const r = await api(`/api/videos/${videoId}/repost`, { method: 'POST' });
+      btn.classList.toggle('on', r.reposted);
+      $('.cnt', btn).textContent = fmt(r.count);
+      toast(r.reposted ? 'Reposted to your profile' : 'Repost removed');
+    } catch (err) { toast(err.message); }
   } else if (act === 'sound') {
     const v = $('video', slide);
     v.muted = !v.muted;
@@ -372,9 +400,16 @@ async function renderProfile(creatorId) {
           <button class="ghost delvid" title="Delete video" style="color:var(--bad)">${icon('i-trash')}</button>
         </div>` : ''}
       </div>`).join('') || '<p class="dim">None yet.</p>'}
+    ${c.reposts && c.reposts.length ? `<h3>Reposts</h3>${c.reposts.map((v) => `
+      <div class="card row repost-row" data-rcreator="${v.user_id}">
+        <div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v.title)}</div>
+          <div class="dim">@${v.creator_handle}</div></div>
+        <span style="flex:none;color:var(--gold)">${icon('i-repost')}</span>
+      </div>`).join('')}` : ''}
   </div>`;
   $('#back').onclick = () => setTab(state.tab);
   bindBuyButtons();
+  view.querySelectorAll('.repost-row').forEach((r) => { r.onclick = () => renderProfile(Number(r.dataset.rcreator)); });
 
   if (mine) {
     view.querySelectorAll('.editvid').forEach((b) => {
@@ -545,22 +580,44 @@ async function renderWallet() {
 }
 
 // ---------- upload ----------
-function renderUpload() {
+async function renderUpload() {
   if (!me) {
-    view.innerHTML = `<div class="empty"><p>Sign in to upload — tips on your videos go straight to your MoMo number.</p>
+    view.innerHTML = `<div class="empty"><p>Sign in to post — tips on your videos go straight to your MoMo number.</p>
       <button class="primary" id="uploadlogin" style="max-width:280px;margin:16px auto 0">Sign in</button></div>`;
     $('#uploadlogin').onclick = () => openLoginSheet(() => renderUpload());
     return;
   }
+  const tracks = await api('/api/tracks').catch(() => []);
+  let mtype = 'video';
+  let preview = null;
   view.innerHTML = `
   <div class="panel">
-    <h2>Upload</h2>
+    <h2>Create a post</h2>
     <div class="card">
-      <label>Video file (from your phone camera or gallery)</label>
+      <label>What are you posting?</label>
+      <div class="seg" id="mtype">
+        <button data-mt="video" class="on" type="button">Video</button>
+        <button data-mt="image" type="button">Photo</button>
+      </div>
+      <label id="filelabel">Video file (camera or gallery)</label>
       <input type="file" id="vfile" accept="video/*">
+
       <label>Caption</label>
       <input id="vtitle" placeholder="Give it a caption people will tip for">
-      <label>Feed</label>
+
+      <label>Sound (optional)</label>
+      <select id="vtrack">
+        <option value="">No music — keep original sound</option>
+        ${tracks.map((t) => `<option value="${t.id}" data-file="${esc(t.filename)}">${esc(t.title)} · ${esc(t.artist)}</option>`).join('')}
+      </select>
+      <div class="row" style="gap:10px;margin-top:8px;justify-content:flex-start">
+        <button class="ghost" id="preview" type="button">▶ Preview track</button>
+        <span class="dim" style="font-size:12px">or</span>
+        <label class="ghost" id="audiopick" style="cursor:pointer">Upload a song<input type="file" id="afile" accept="audio/*" style="display:none"></label>
+      </div>
+      <div class="dim" id="audioname" style="font-size:12px;margin-top:6px"></div>
+
+      <label style="margin-top:6px">Feed</label>
       <select id="vkind">
         <option value="watch">Watch — entertainment feed</option>
         <option value="learn">Learn — 60-second lesson</option>
@@ -570,27 +627,61 @@ function renderUpload() {
         <option value="rw">Kinyarwanda</option><option value="en">English</option>
         <option value="fr">Français</option><option value="sw">Kiswahili</option>
       </select>
-      <button class="primary" id="upbtn" style="margin-top:10px">Upload</button>
-      <p class="dim" style="margin-top:8px">Every upload is compressed for 3G so your viewers spend less data. You can edit the caption or delete the video later from your profile.</p>
+      <button class="primary" id="upbtn" style="margin-top:12px">Post</button>
+      <p class="dim" style="margin-top:8px">Posts are compressed for 3G so viewers spend less data. A photo becomes a short video; add a song to make it move. You can edit the caption or delete a post later from your profile.</p>
     </div>
   </div>`;
+
+  const stopPreview = () => { if (preview) { preview.pause(); preview = null; $('#preview').textContent = '▶ Preview track'; } };
+
+  $('#mtype').onclick = (e) => {
+    const b = e.target.closest('[data-mt]');
+    if (!b) return;
+    mtype = b.dataset.mt;
+    $('#mtype').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    $('#vfile').setAttribute('accept', mtype === 'image' ? 'image/*' : 'video/*');
+    $('#vfile').value = '';
+    $('#filelabel').textContent = mtype === 'image' ? 'Photo (camera or gallery)' : 'Video file (camera or gallery)';
+  };
+
+  $('#preview').onclick = () => {
+    const opt = $('#vtrack').selectedOptions[0];
+    const file = opt?.dataset.file;
+    if (!file) return toast('Pick a track first');
+    if (preview) return stopPreview();
+    preview = new Audio(`/tracks/${file}`);
+    preview.play().then(() => { $('#preview').textContent = '■ Stop'; }).catch(() => toast('Could not play preview'));
+    preview.onended = stopPreview;
+  };
+
+  $('#vtrack').onchange = () => { stopPreview(); if ($('#vtrack').value) { $('#afile').value = ''; $('#audioname').textContent = ''; } };
+  $('#afile').onchange = () => {
+    const f = $('#afile').files[0];
+    $('#audioname').textContent = f ? `Using your song: ${f.name}` : '';
+    if (f) { $('#vtrack').value = ''; stopPreview(); }
+  };
+
   $('#upbtn').onclick = async () => {
     const f = $('#vfile').files[0];
-    if (!f) return toast('Choose a video first');
+    if (!f) return toast(mtype === 'image' ? 'Choose a photo first' : 'Choose a video first');
+    stopPreview();
     const fd = new FormData();
     fd.append('title', $('#vtitle').value || f.name);
     fd.append('kind', $('#vkind').value);
     fd.append('lang', $('#vlang').value);
-    fd.append('video', f);
+    fd.append(mtype, f);
+    const audio = $('#afile').files[0];
+    if (audio) fd.append('audio', audio);
+    else if ($('#vtrack').value) fd.append('track_id', $('#vtrack').value);
     const btn = $('#upbtn');
-    btn.disabled = true; btn.textContent = 'Uploading & compressing…';
+    btn.disabled = true; btn.textContent = 'Posting & compressing…';
     try {
       const v = await api('/api/videos', { method: 'POST', body: fd });
-      toast(v.transcoded ? 'Uploaded and compressed for 3G' : 'Uploaded (stored as-is — compression unavailable on this server)');
+      toast('Posted');
       setTab(v.kind);
     } catch (err) {
       toast(err.message);
-      btn.disabled = false; btn.textContent = 'Upload';
+      btn.disabled = false; btn.textContent = 'Post';
     }
   };
 }

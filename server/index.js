@@ -9,13 +9,15 @@ import {
   provider, startTip, startOrder, startWithdrawal, availableBalance,
   confirmDelivery, refundOrder, startSettlementWorker,
 } from './money.js';
-import { transcode, probeDuration, hasFfmpeg } from './transcode.js';
+import { transcode, probeDuration, hasFfmpeg, muxAudio, imageToVideo } from './transcode.js';
 import { signup, login, getSessionUser, deleteSession, publicUser } from './auth.js';
 import { storageMode, putObject, deleteObject, publicUrl, getObject } from './storage.js';
+import { ensureTracks } from './tracks.js';
 
 const app = createApp();
 const videosDir = path.join(config.dataDir, 'videos');
 const avatarsDir = path.join(config.dataDir, 'avatars');
+const tracksDir = path.join(config.dataDir, 'tracks');
 
 // Serve a media object from R2: redirect to the public URL when one is
 // configured (so bandwidth never touches this server), otherwise proxy the
@@ -39,6 +41,22 @@ async function serveFromR2(req, res, key) {
   res.writeHead(upstream.status, headers);
   const { Readable } = await import('node:stream');
   Readable.fromWeb(upstream.body).pipe(res);
+}
+
+// Get a local filesystem path for a library track (downloading from R2 first
+// when needed) so ffmpeg can read it. Returns null if the track is missing.
+async function localTrackPath(filename, tmp) {
+  if (storageMode !== 'r2') {
+    const local = path.join(tracksDir, filename);
+    return fs.existsSync(local) ? local : null;
+  }
+  const r = await getObject(`tracks/${filename}`);
+  if (r.status >= 400) return null;
+  const dest = path.join(tmp, `track-${Date.now()}-${filename.replace(/[^\w.-]/g, '')}`);
+  const { Readable } = await import('node:stream');
+  const ws = fs.createWriteStream(dest);
+  await new Promise((resolve, reject) => { Readable.fromWeb(r.body).pipe(ws); ws.on('finish', resolve); ws.on('error', reject); });
+  return dest;
 }
 
 // ---------- auth ----------
@@ -120,10 +138,15 @@ app.get('/api/creators/:id', (req, res) => {
   if (!creator) return sendJson(res, 404, { error: 'Not found' });
   const videos = db.prepare('SELECT * FROM videos WHERE user_id=? AND deleted=0 ORDER BY created_at DESC').all(creator.id);
   const products = db.prepare('SELECT * FROM products WHERE creator_id=? AND active=1').all(creator.id);
+  const reposts = db.prepare(`
+    SELECT v.*, u.name AS creator_name, u.handle AS creator_handle, u.color AS creator_color, u.avatar AS creator_avatar
+    FROM reposts r JOIN videos v ON v.id = r.video_id JOIN users u ON u.id = v.user_id
+    WHERE r.user_id=? AND v.deleted=0 ORDER BY r.id DESC
+  `).all(creator.id);
   const tipsTotal = Number(db.prepare(`
     SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE type='tip' AND status='success' AND payee_user_id=?
   `).get(creator.id).s);
-  sendJson(res, 200, { ...publicUser(creator), videos, products, tips_total: tipsTotal });
+  sendJson(res, 200, { ...publicUser(creator), videos, products, reposts, tips_total: tipsTotal });
 });
 
 // ---------- feed ----------
@@ -131,11 +154,19 @@ app.get('/api/feed', (req, res) => {
   const kind = req.query.kind === 'learn' ? 'learn' : 'watch';
   const rows = db.prepare(`
     SELECT v.*, u.name AS creator_name, u.handle AS creator_handle, u.color AS creator_color, u.avatar AS creator_avatar,
-      (SELECT COUNT(*) FROM transactions t WHERE t.video_id=v.id AND t.type='tip' AND t.status='success') AS tip_count
+      (SELECT COUNT(*) FROM transactions t WHERE t.video_id=v.id AND t.type='tip' AND t.status='success') AS tip_count,
+      (SELECT COUNT(*) FROM reposts r WHERE r.video_id=v.id) AS repost_count,
+      (SELECT COUNT(*) FROM saves sv WHERE sv.video_id=v.id) AS save_count
     FROM videos v JOIN users u ON u.id = v.user_id
     WHERE v.kind = ? AND v.deleted = 0
     ORDER BY v.created_at DESC LIMIT 200
   `).all(kind);
+  const fuser = currentUser(req);
+  if (fuser) {
+    const rep = new Set(db.prepare('SELECT video_id FROM reposts WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
+    const sav = new Set(db.prepare('SELECT video_id FROM saves WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
+    for (const r of rows) { r.reposted = rep.has(r.id); r.saved = sav.has(r.id); }
+  }
   const now = Date.now() / 1000;
   for (const r of rows) {
     const ageHours = Math.max((now - Number(r.created_at)) / 3600, 0.1);
@@ -154,29 +185,95 @@ app.post('/api/videos/:id/like', (req, res) => {
   sendJson(res, 200, { ok: true, likes: Number(db.prepare('SELECT likes FROM videos WHERE id=?').get(req.params.id)?.likes ?? 0) });
 });
 
+// ---------- repost / save (toggle) ----------
+app.post('/api/videos/:id/repost', (req, res) => {
+  const user = requireUser(req);
+  const vid = Number(req.params.id);
+  const exists = db.prepare('SELECT 1 FROM reposts WHERE user_id=? AND video_id=?').get(user.id, vid);
+  if (exists) db.prepare('DELETE FROM reposts WHERE user_id=? AND video_id=?').run(user.id, vid);
+  else db.prepare('INSERT INTO reposts (user_id, video_id) VALUES (?, ?)').run(user.id, vid);
+  const count = Number(db.prepare('SELECT COUNT(*) c FROM reposts WHERE video_id=?').get(vid).c);
+  sendJson(res, 200, { reposted: !exists, count });
+});
+
+app.post('/api/videos/:id/save', (req, res) => {
+  const user = requireUser(req);
+  const vid = Number(req.params.id);
+  const exists = db.prepare('SELECT 1 FROM saves WHERE user_id=? AND video_id=?').get(user.id, vid);
+  if (exists) db.prepare('DELETE FROM saves WHERE user_id=? AND video_id=?').run(user.id, vid);
+  else db.prepare('INSERT INTO saves (user_id, video_id) VALUES (?, ?)').run(user.id, vid);
+  const count = Number(db.prepare('SELECT COUNT(*) c FROM saves WHERE video_id=?').get(vid).c);
+  sendJson(res, 200, { saved: !exists, count });
+});
+
+app.get('/api/saved', (req, res) => {
+  const user = requireUser(req);
+  const rows = db.prepare(`
+    SELECT v.*, u.name AS creator_name, u.handle AS creator_handle, u.color AS creator_color, u.avatar AS creator_avatar,
+      (SELECT COUNT(*) FROM transactions t WHERE t.video_id=v.id AND t.type='tip' AND t.status='success') AS tip_count,
+      (SELECT COUNT(*) FROM reposts r WHERE r.video_id=v.id) AS repost_count
+    FROM saves s JOIN videos v ON v.id = s.video_id JOIN users u ON u.id = v.user_id
+    WHERE s.user_id=? AND v.deleted=0 ORDER BY s.id DESC
+  `).all(user.id);
+  for (const r of rows) r.saved = true;
+  sendJson(res, 200, rows);
+});
+
+// ---------- music library ----------
+app.get('/api/tracks', (req, res) => {
+  sendJson(res, 200, db.prepare('SELECT id, title, artist, filename, duration_s FROM tracks ORDER BY id').all());
+});
+
 // ---------- upload / edit / delete (owner only) ----------
 app.post('/api/videos', async (req, res) => {
   const user = requireUser(req);
-  const { fields, file } = await parseUpload(req, path.join(config.dataDir, 'tmp'));
-  if (!file) return sendJson(res, 400, { error: 'No video file' });
-
+  const tmp = path.join(config.dataDir, 'tmp');
+  const { fields, files } = await parseUpload(req, tmp);
+  const cleanup = []; // temp inputs to remove afterwards (never the served output)
   const filename = `v${Date.now()}.mp4`;
   const outPath = path.join(videosDir, filename);
-  const { transcoded } = await transcode(file.path, outPath);
-  fs.rmSync(file.path, { force: true });
-  const duration = await probeDuration(outPath);
-  const size = fs.statSync(outPath).size;
+  try {
+    const mediaFile = files.find((f) => f.field === 'video' || f.field === 'image' || f.field === 'media');
+    if (!mediaFile) return sendJson(res, 400, { error: 'No video or image file' });
+    cleanup.push(mediaFile.path);
+    const isImage = mediaFile.field === 'image' || /\.(jpe?g|png|webp|gif|heic|bmp)$/i.test(mediaFile.filename || '');
 
-  if (storageMode === 'r2') {
-    await putObject(`videos/${filename}`, fs.readFileSync(outPath), 'video/mp4');
-    fs.rmSync(outPath, { force: true }); // R2 holds the canonical copy now
+    // Soundtrack: an uploaded audio file, or a chosen library track.
+    let audioPath = null;
+    const audioFile = files.find((f) => f.field === 'audio');
+    if (audioFile) { audioPath = audioFile.path; cleanup.push(audioPath); }
+    else if (fields.track_id) {
+      const track = db.prepare('SELECT * FROM tracks WHERE id=?').get(Number(fields.track_id));
+      if (track) {
+        const tp = await localTrackPath(track.filename, tmp);
+        if (tp) { audioPath = tp; if (tp.startsWith(tmp)) cleanup.push(tp); }
+      }
+    }
+
+    let transcoded;
+    if (isImage) ({ transcoded } = await imageToVideo(mediaFile.path, audioPath, outPath));
+    else if (audioPath) ({ transcoded } = await muxAudio(mediaFile.path, audioPath, outPath));
+    else ({ transcoded } = await transcode(mediaFile.path, outPath));
+
+    const duration = await probeDuration(outPath);
+    const size = fs.statSync(outPath).size;
+
+    if (storageMode === 'r2') {
+      await putObject(`videos/${filename}`, fs.readFileSync(outPath), 'video/mp4');
+      fs.rmSync(outPath, { force: true }); // R2 holds the canonical copy now
+    }
+
+    const info = db.prepare(`
+      INSERT INTO videos (user_id, title, kind, lang, filename, duration_s, size_bytes)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(user.id, fields.title || 'Untitled', fields.kind === 'learn' ? 'learn' : 'watch', fields.lang || 'rw', filename, duration, size);
+    sendJson(res, 200, { ...db.prepare('SELECT * FROM videos WHERE id=?').get(Number(info.lastInsertRowid)), transcoded });
+  } catch (e) {
+    fs.rm(outPath, { force: true }, () => {}); // drop a half-written output on failure
+    throw e;
+  } finally {
+    for (const f of cleanup) fs.rm(f, { force: true }, () => {});
   }
-
-  const info = db.prepare(`
-    INSERT INTO videos (user_id, title, kind, lang, filename, duration_s, size_bytes)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(user.id, fields.title || 'Untitled', fields.kind === 'learn' ? 'learn' : 'watch', fields.lang || 'rw', filename, duration, size);
-  sendJson(res, 200, { ...db.prepare('SELECT * FROM videos WHERE id=?').get(Number(info.lastInsertRowid)), transcoded });
 });
 
 function ownVideo(req) {
@@ -311,14 +408,17 @@ if (storageMode === 'r2') {
   // Media lives in R2; redirect or proxy from there.
   app.get('/videos/:file', (req, res) => serveFromR2(req, res, `videos/${req.params.file}`));
   app.get('/avatars/:file', (req, res) => serveFromR2(req, res, `avatars/${req.params.file}`));
+  app.get('/tracks/:file', (req, res) => serveFromR2(req, res, `tracks/${req.params.file}`));
 } else {
   app.static('/videos/', videosDir, 365 * 24 * 3600);
   app.static('/avatars/', avatarsDir, 30 * 24 * 3600);
+  app.static('/tracks/', tracksDir, 365 * 24 * 3600);
 }
 app.static('/', path.join(config.root, 'public'), 3600);
 
 if (process.env.NODE_ENV !== 'test') {
   startSettlementWorker(1000);
+  ensureTracks().catch((e) => console.error('Track seeding failed:', e.message));
   app.listen(config.port, () => {
     console.log(`Hobe running on http://localhost:${config.port}  (MoMo provider: ${provider.name}, storage: ${storageMode})`);
   });

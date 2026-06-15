@@ -1,5 +1,6 @@
-// Streaming multipart/form-data parser — just enough for one video file plus
-// text fields, without buffering the whole upload in memory.
+// Streaming multipart/form-data parser — handles text fields plus one or more
+// file parts (e.g. a video/image plus an optional audio track), without
+// buffering whole uploads in memory.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -12,23 +13,26 @@ export function parseUpload(req, tmpDir, { maxBytes = 200 * 1024 * 1024 } = {}) 
 
     fs.mkdirSync(tmpDir, { recursive: true });
     const fields = {};
-    let file = null;          // { path, filename, size, stream }
+    const files = [];        // [{ field, path, filename, size, done }]
     let buf = Buffer.from('\r\n'); // prime so the first boundary (without leading CRLF) matches
-    let current = null;       // { isFile, name, stream? , chunks? }
+    let current = null;      // { isFile, name, stream?, fobj?, chunks? }
     let total = 0;
     let done = false;
+
+    const settle = () => Promise.all(files.map((f) => f.done))
+      .then(() => resolve({ fields, files, file: files[0] || null }));
 
     const fail = (err) => {
       if (done) return; done = true;
       current?.stream?.destroy();
-      if (file) fs.rm(file.path, { force: true }, () => {});
+      for (const f of files) fs.rm(f.path, { force: true }, () => {});
       req.destroy();
       reject(err);
     };
 
     const finishPart = (data) => {
       if (!current) return;
-      if (current.isFile) current.stream.write(data), current.stream.end(), file && (file.size += data.length);
+      if (current.isFile) { current.stream.write(data); current.stream.end(); current.fobj.size += data.length; }
       else fields[current.name] = Buffer.concat([...current.chunks, data]).toString('utf8');
       current = null;
     };
@@ -52,8 +56,10 @@ export function parseUpload(req, tmpDir, { maxBytes = 200 * 1024 * 1024 } = {}) 
         if (filename !== undefined) {
           const tmpPath = path.join(tmpDir, `up-${crypto.randomUUID()}`);
           const stream = fs.createWriteStream(tmpPath);
-          file = { path: tmpPath, filename, size: 0 };
-          current = { isFile: true, name, stream };
+          const fobj = { field: name, path: tmpPath, filename, size: 0 };
+          fobj.done = new Promise((res) => stream.once('finish', res));
+          files.push(fobj);
+          current = { isFile: true, name, stream, fobj };
         } else {
           current = { isFile: false, name, chunks: [] };
         }
@@ -61,7 +67,7 @@ export function parseUpload(req, tmpDir, { maxBytes = 200 * 1024 * 1024 } = {}) 
       // Stream the safe portion of the buffer (keep a boundary-length tail)
       if (!done && current && buf.length > boundary.length) {
         const safe = buf.subarray(0, buf.length - boundary.length);
-        if (current.isFile) { current.stream.write(safe); file.size += safe.length; }
+        if (current.isFile) { current.stream.write(safe); current.fobj.size += safe.length; }
         else current.chunks.push(Buffer.from(safe));
         buf = buf.subarray(buf.length - boundary.length);
       }
@@ -69,10 +75,9 @@ export function parseUpload(req, tmpDir, { maxBytes = 200 * 1024 * 1024 } = {}) 
 
     req.on('end', () => {
       if (done || !current) {
-        const finish = () => resolve({ fields, file });
-        if (file?.path && current === null) finish();
-        else if (current?.isFile) { current.stream.end(finish); current = null; }
-        else { finishPart(Buffer.alloc(0)); finish(); }
+        if (current && current.isFile) current.stream.end();
+        else if (current) finishPart(Buffer.alloc(0));
+        settle();
       } else {
         fail(Object.assign(new Error('Truncated upload'), { status: 400 }));
       }

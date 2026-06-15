@@ -108,6 +108,36 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 `);
 
+db.exec(`
+CREATE TABLE IF NOT EXISTS reposts (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  video_id INTEGER NOT NULL REFERENCES videos(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(user_id, video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reposts_user ON reposts(user_id);
+CREATE INDEX IF NOT EXISTS idx_reposts_video ON reposts(video_id);
+
+CREATE TABLE IF NOT EXISTS saves (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  video_id INTEGER NOT NULL REFERENCES videos(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(user_id, video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_saves_user ON saves(user_id);
+
+CREATE TABLE IF NOT EXISTS tracks (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  artist TEXT DEFAULT '',
+  filename TEXT NOT NULL,
+  duration_s REAL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+`);
+
 // Migrations for databases created before these columns existed
 // (e.g. the live Fly volume). Safe to re-run.
 try { db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch { /* exists */ }
