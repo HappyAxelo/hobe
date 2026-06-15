@@ -128,6 +128,15 @@ CREATE TABLE IF NOT EXISTS saves (
 );
 CREATE INDEX IF NOT EXISTS idx_saves_user ON saves(user_id);
 
+CREATE TABLE IF NOT EXISTS follows (
+  id INTEGER PRIMARY KEY,
+  follower_id INTEGER NOT NULL REFERENCES users(id),
+  creator_id INTEGER NOT NULL REFERENCES users(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(follower_id, creator_id)
+);
+CREATE INDEX IF NOT EXISTS idx_follows_creator ON follows(creator_id);
+
 CREATE TABLE IF NOT EXISTS tracks (
   id INTEGER PRIMARY KEY,
   title TEXT NOT NULL,
@@ -143,6 +152,8 @@ CREATE TABLE IF NOT EXISTS tracks (
 try { db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch { /* exists */ }
 try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT'); } catch { /* exists */ }
 try { db.exec('ALTER TABLE videos ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0'); } catch { /* exists */ }
+try { db.exec('ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0'); } catch { /* exists */ }
+try { db.exec('ALTER TABLE videos ADD COLUMN sound TEXT'); } catch { /* exists */ }
 
 export function getBalance(account) {
   const row = db.prepare('SELECT COALESCE(SUM(amount),0) AS bal FROM ledger WHERE account = ?').get(account);

@@ -6,6 +6,11 @@ const view = $('#view');
 const fmt = (n) => Number(n).toLocaleString('en-US');
 const icon = (id, cls = 'ic') => `<svg class="${cls}"><use href="#${id}"/></svg>`;
 const statusIc = (kind, id) => `<div class="statusic ${kind}"><svg><use href="#${id}"/></svg></div>`;
+function parseTags(text) {
+  const tags = String(text ?? '').match(/#[\p{L}0-9_]+/gu) || [];
+  const caption = String(text ?? '').replace(/#[\p{L}0-9_]+/gu, '').replace(/\s+/g, ' ').trim();
+  return { caption, tags };
+}
 
 // ---------- state ----------
 let me = null;
@@ -203,6 +208,10 @@ function mountFeed(vids, kind, emptyHtml) {
       if (!video) continue;
       if (en.isIntersecting && en.intersectionRatio > 0.6) {
         video.play().catch(() => {});
+        video.ontimeupdate = () => {
+          const bar = $('.vbar i', en.target);
+          if (bar && video.duration) bar.style.width = `${(video.currentTime / video.duration) * 100}%`;
+        };
         const id = en.target.dataset.vid;
         if (!en.target.dataset.viewed) {
           en.target.dataset.viewed = '1';
@@ -231,26 +240,36 @@ async function renderSaved() {
 
 function slideHtml(v, kind) {
   const langNames = { rw: 'Kinyarwanda', en: 'English', fr: 'Français', sw: 'Kiswahili' };
+  const { caption, tags } = parseTags(v.title);
+  const verified = Number(v.creator_verified) ? `<svg class="vrf"><use href="#i-verified"/></svg>` : '';
   return `
   <section class="slide" data-vid="${v.id}" data-creator="${v.user_id}" data-cname="${esc(v.creator_name)}">
     <video src="/videos/${v.filename}" loop playsinline preload="${kind === 'watch' ? 'auto' : 'metadata'}" muted></video>
-    <div class="overlay">
-      <div class="who" data-act="profile">
-        ${avatarHtml({ name: v.creator_name, color: v.creator_color, avatar: v.creator_avatar }, 36)}
-        <div><div class="handle">@${v.creator_handle}</div></div>
-      </div>
-      <div class="vtitle">${esc(v.title)}</div>
-      ${v.kind === 'learn' ? `<div class="lang"><span class="tagpill">${langNames[v.lang] || v.lang} · 60-sec lesson</span></div>` : ''}
-    </div>
+    <div class="scrim"></div>
     <div class="rail">
-      <button data-act="tip" class="tipbtn"><span>RWF</span><span class="cnt">tip</span></button>
-      <button data-act="like">${icon('i-heart')}<span class="cnt">${fmt(v.likes)}</span></button>
-      <button data-act="save" class="${v.saved ? 'on' : ''}">${icon('i-bookmark')}<span class="cnt">save</span></button>
-      <button data-act="repost" class="${v.reposted ? 'on' : ''}">${icon('i-repost')}<span class="cnt">${fmt(v.repost_count || 0)}</span></button>
-      <button data-act="sound">${icon('i-mute')}</button>
-      <button data-act="share">${icon('i-share')}<span class="cnt">share</span></button>
-      <button data-act="report" title="Report this video">${icon('i-flag')}</button>
+      <button class="railbtn tipbtn" data-act="tip"><span class="ring">${icon('i-coin')}</span><span class="cnt">Tip</span></button>
+      <button class="railbtn" data-act="like">${icon('i-heart')}<span class="cnt">${fmt(v.likes)}</span></button>
+      <button class="railbtn ${v.saved ? 'on' : ''}" data-act="save">${icon('i-bookmark')}<span class="cnt">Save</span></button>
+      <button class="railbtn ${v.reposted ? 'on' : ''}" data-act="repost">${icon('i-repost')}<span class="cnt">${fmt(v.repost_count || 0)}</span></button>
+      <button class="railbtn" data-act="share">${icon('i-share')}<span class="cnt">Share</span></button>
+      <button class="railbtn mutebtn" data-act="sound">${icon('i-mute')}</button>
+      <button class="railbtn small" data-act="report" title="Report this video">${icon('i-flag')}</button>
     </div>
+    <div class="creatorcard">
+      <div class="cc-head">
+        <span class="cc-av" data-act="profile">${avatarHtml({ name: v.creator_name, color: v.creator_color, avatar: v.creator_avatar }, 38)}</span>
+        <span class="cc-id" data-act="profile">
+          <span class="cc-name">${esc(v.creator_name)}${verified}</span>
+          <span class="cc-handle">@${v.creator_handle}</span>
+        </span>
+        <button class="cc-follow ${v.following ? 'following' : ''}" data-act="follow">${v.following ? 'Following' : 'Follow'}</button>
+      </div>
+      ${caption ? `<div class="cc-cap">${esc(caption)}</div>` : ''}
+      ${tags.length ? `<div class="cc-tags">${tags.map((t) => esc(t)).join(' ')}</div>` : ''}
+      ${v.kind === 'learn' ? `<div class="cc-lesson">${langNames[v.lang] || v.lang} · 60-sec lesson</div>` : ''}
+      <div class="cc-sound">${icon('i-music')}<span>${esc(v.sound || 'Original sound')}</span></div>
+    </div>
+    <div class="vbar"><i></i></div>
   </section>`;
 }
 
@@ -298,6 +317,13 @@ async function feedClick(e) {
       await api(`/api/videos/${videoId}/report`, { method: 'POST', json: { reason } }).catch(() => {});
       toast('Reported. Our team will review it.');
     }
+  } else if (act === 'follow') {
+    if (!me) return openLoginSheet();
+    try {
+      const r = await api(`/api/creators/${slide.dataset.creator}/follow`, { method: 'POST' });
+      btn.classList.toggle('following', r.following);
+      btn.textContent = r.following ? 'Following' : 'Follow';
+    } catch (err) { toast(err.message); }
   } else if (act === 'profile') {
     renderProfile(Number(slide.dataset.creator));
   }
@@ -353,7 +379,7 @@ function openTipSheet(videoId, creatorName) {
 // ---------- share ----------
 async function shareVideo(slide) {
   const src = $('video', slide).getAttribute('src');
-  const title = $('.vtitle', slide).textContent;
+  const title = $('.cc-cap', slide)?.textContent || slide.dataset.cname || 'Hobe';
   try {
     const res = await fetch(src);
     const blob = await res.blob();
@@ -383,11 +409,15 @@ async function renderProfile(creatorId) {
       <div class="row">
         <div class="who">
           ${avatarHtml(c, 50)}
-          <div><h2 style="margin:0">${esc(c.name)}</h2><div class="dim">@${c.handle}</div></div>
+          <div><h2 style="margin:0;display:flex;align-items:center;gap:5px">${esc(c.name)}${Number(c.verified) ? '<svg class="vrf"><use href="#i-verified"/></svg>' : ''}</h2><div class="dim">@${c.handle}</div></div>
         </div>
         <div style="text-align:right"><div class="big" style="font-size:21px">${fmt(c.tips_total)}</div><div class="dim">RWF tipped</div></div>
       </div>
-      <p style="margin-top:10px;font-size:14px">${esc(c.bio)}</p>
+      <div class="row" style="margin-top:12px;gap:12px">
+        <div style="font-size:14px"><b>${fmt(c.followers || 0)}</b> <span class="dim">followers</span></div>
+        ${!mine ? `<button class="${c.following ? 'ghost' : 'primary'} pfollow" style="flex:1;max-width:200px">${c.following ? 'Following' : 'Follow'}</button>` : ''}
+      </div>
+      ${c.bio ? `<p style="margin-top:10px;font-size:14px">${esc(c.bio)}</p>` : ''}
     </div>
     ${c.products.length ? `<h3>Shop</h3>${c.products.map(productCard).join('')}` : ''}
     <h3>${mine ? 'My videos' : 'Videos'}</h3>
@@ -410,6 +440,12 @@ async function renderProfile(creatorId) {
   $('#back').onclick = () => setTab(state.tab);
   bindBuyButtons();
   view.querySelectorAll('.repost-row').forEach((r) => { r.onclick = () => renderProfile(Number(r.dataset.rcreator)); });
+  const pf = $('.pfollow', view);
+  if (pf) pf.onclick = async () => {
+    if (!me) return openLoginSheet(() => renderProfile(creatorId));
+    try { await api(`/api/creators/${c.id}/follow`, { method: 'POST' }); renderProfile(creatorId); }
+    catch (err) { toast(err.message); }
+  };
 
   if (mine) {
     view.querySelectorAll('.editvid').forEach((b) => {

@@ -146,7 +146,10 @@ app.get('/api/creators/:id', (req, res) => {
   const tipsTotal = Number(db.prepare(`
     SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE type='tip' AND status='success' AND payee_user_id=?
   `).get(creator.id).s);
-  sendJson(res, 200, { ...publicUser(creator), videos, products, reposts, tips_total: tipsTotal });
+  const viewer = currentUser(req);
+  const followers = Number(db.prepare('SELECT COUNT(*) c FROM follows WHERE creator_id=?').get(creator.id).c);
+  const following = viewer ? !!db.prepare('SELECT 1 FROM follows WHERE follower_id=? AND creator_id=?').get(viewer.id, creator.id) : false;
+  sendJson(res, 200, { ...publicUser(creator), videos, products, reposts, tips_total: tipsTotal, followers, following });
 });
 
 // ---------- feed ----------
@@ -156,7 +159,8 @@ app.get('/api/feed', (req, res) => {
     SELECT v.*, u.name AS creator_name, u.handle AS creator_handle, u.color AS creator_color, u.avatar AS creator_avatar,
       (SELECT COUNT(*) FROM transactions t WHERE t.video_id=v.id AND t.type='tip' AND t.status='success') AS tip_count,
       (SELECT COUNT(*) FROM reposts r WHERE r.video_id=v.id) AS repost_count,
-      (SELECT COUNT(*) FROM saves sv WHERE sv.video_id=v.id) AS save_count
+      (SELECT COUNT(*) FROM saves sv WHERE sv.video_id=v.id) AS save_count,
+      u.verified AS creator_verified
     FROM videos v JOIN users u ON u.id = v.user_id
     WHERE v.kind = ? AND v.deleted = 0
     ORDER BY v.created_at DESC LIMIT 200
@@ -165,7 +169,8 @@ app.get('/api/feed', (req, res) => {
   if (fuser) {
     const rep = new Set(db.prepare('SELECT video_id FROM reposts WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
     const sav = new Set(db.prepare('SELECT video_id FROM saves WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
-    for (const r of rows) { r.reposted = rep.has(r.id); r.saved = sav.has(r.id); }
+    const fol = new Set(db.prepare('SELECT creator_id FROM follows WHERE follower_id=?').all(fuser.id).map((x) => x.creator_id));
+    for (const r of rows) { r.reposted = rep.has(r.id); r.saved = sav.has(r.id); r.following = fol.has(r.user_id); }
   }
   const now = Date.now() / 1000;
   for (const r of rows) {
@@ -219,6 +224,18 @@ app.get('/api/saved', (req, res) => {
   sendJson(res, 200, rows);
 });
 
+// ---------- follow (toggle) ----------
+app.post('/api/creators/:id/follow', (req, res) => {
+  const user = requireUser(req);
+  const cid = Number(req.params.id);
+  if (cid === user.id) return sendJson(res, 400, { error: "You can't follow yourself" });
+  const exists = db.prepare('SELECT 1 FROM follows WHERE follower_id=? AND creator_id=?').get(user.id, cid);
+  if (exists) db.prepare('DELETE FROM follows WHERE follower_id=? AND creator_id=?').run(user.id, cid);
+  else db.prepare('INSERT INTO follows (follower_id, creator_id) VALUES (?, ?)').run(user.id, cid);
+  const followers = Number(db.prepare('SELECT COUNT(*) c FROM follows WHERE creator_id=?').get(cid).c);
+  sendJson(res, 200, { following: !exists, followers });
+});
+
 // ---------- music library ----------
 app.get('/api/tracks', (req, res) => {
   sendJson(res, 200, db.prepare('SELECT id, title, artist, filename, duration_s FROM tracks ORDER BY id').all());
@@ -240,11 +257,13 @@ app.post('/api/videos', async (req, res) => {
 
     // Soundtrack: an uploaded audio file, or a chosen library track.
     let audioPath = null;
+    let sound = 'Original sound';
     const audioFile = files.find((f) => f.field === 'audio');
-    if (audioFile) { audioPath = audioFile.path; cleanup.push(audioPath); }
+    if (audioFile) { audioPath = audioFile.path; cleanup.push(audioPath); sound = 'Original audio'; }
     else if (fields.track_id) {
       const track = db.prepare('SELECT * FROM tracks WHERE id=?').get(Number(fields.track_id));
       if (track) {
+        sound = track.artist ? `${track.title} · ${track.artist}` : track.title;
         const tp = await localTrackPath(track.filename, tmp);
         if (tp) { audioPath = tp; if (tp.startsWith(tmp)) cleanup.push(tp); }
       }
@@ -264,9 +283,9 @@ app.post('/api/videos', async (req, res) => {
     }
 
     const info = db.prepare(`
-      INSERT INTO videos (user_id, title, kind, lang, filename, duration_s, size_bytes)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(user.id, fields.title || 'Untitled', fields.kind === 'learn' ? 'learn' : 'watch', fields.lang || 'rw', filename, duration, size);
+      INSERT INTO videos (user_id, title, kind, lang, filename, duration_s, size_bytes, sound)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(user.id, fields.title || 'Untitled', fields.kind === 'learn' ? 'learn' : 'watch', fields.lang || 'rw', filename, duration, size, sound);
     sendJson(res, 200, { ...db.prepare('SELECT * FROM videos WHERE id=?').get(Number(info.lastInsertRowid)), transcoded });
   } catch (e) {
     fs.rm(outPath, { force: true }, () => {}); // drop a half-written output on failure

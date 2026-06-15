@@ -255,3 +255,58 @@ input:focus, select:focus { box-shadow: 0 0 0 3px rgba(255,198,46,.15); }
 /* gentle entrance for panel cards */
 .panel .card { animation: rise .28s ease both; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ===================== mobile feed redesign ===================== */
+.slide video { object-fit: cover; }
+.scrim { position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(8,9,13,.45) 0%, transparent 18%, transparent 50%, rgba(8,9,13,.84) 100%); }
+
+.rail { right: 8px; bottom: calc(var(--nav-h) + 150px); gap: 14px; }
+.rail .railbtn {
+  background: rgba(12,14,19,.45); border: 1px solid rgba(255,255,255,.1); color: #fff;
+  width: 46px; height: 46px; border-radius: 50%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  backdrop-filter: blur(8px); transition: transform .12s ease, color .15s, border-color .15s;
+}
+.rail .railbtn:active { transform: scale(.9); }
+.rail .railbtn .cnt { font-size: 10.5px; font-weight: 600; color: #cfd3dd; margin-top: 2px; }
+.rail .railbtn svg { width: 23px; height: 23px; fill: currentColor; }
+.rail .railbtn.small { width: 38px; height: 38px; color: #8b92a5; }
+.rail .railbtn.small svg { width: 18px; height: 18px; }
+.rail .railbtn.on { color: var(--gold); border-color: rgba(255,198,46,.5); }
+.rail .railbtn.liked { color: var(--heart); }
+.rail .tipbtn { background: transparent; border: none; box-shadow: none; }
+.rail .tipbtn .ring {
+  width: 50px; height: 50px; border-radius: 50%; background: var(--grad); color: #221a00;
+  display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 18px rgba(255,176,46,.5);
+}
+.rail .tipbtn .ring svg { width: 24px; height: 24px; }
+.rail .tipbtn .cnt { color: #ffd87a; }
+
+.creatorcard {
+  position: absolute; left: 12px; right: 74px; bottom: calc(var(--nav-h) + 26px);
+  background: rgba(16,18,26,.42); backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,.08); border-radius: 18px; padding: 11px 12px;
+}
+.cc-head { display: flex; align-items: center; gap: 9px; }
+.cc-av { flex: none; }
+.cc-id { min-width: 0; flex: 1; display: block; }
+.cc-name { display: flex; align-items: center; gap: 4px; font-size: 14px; font-weight: 500; color: #fff; }
+.cc-handle { display: block; font-size: 11px; color: #b8bdc9; }
+.vrf { width: 15px; height: 15px; fill: var(--gold); flex: none; }
+.cc-follow {
+  flex: none; background: var(--grad); color: #221a00; font-size: 12px; font-weight: 500;
+  padding: 6px 14px; border-radius: 999px; border: none; transition: filter .15s, transform .12s;
+}
+.cc-follow:active { transform: scale(.95); }
+.cc-follow.following { background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.2); }
+.cc-cap { font-size: 12.5px; color: #eef0f4; line-height: 1.45; margin-top: 8px; }
+.cc-tags { font-size: 12px; color: var(--gold); margin-top: 3px; }
+.cc-lesson { font-size: 11px; color: #cfd3dd; margin-top: 5px; }
+.cc-sound { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: #cfd3dd; font-size: 11px; }
+.cc-sound svg { width: 14px; height: 14px; fill: currentColor; flex: none; }
+.cc-sound span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.vbar { position: absolute; left: 12px; right: 12px; bottom: calc(var(--nav-h) + 14px);
+  height: 3px; border-radius: 2px; background: rgba(255,255,255,.18); overflow: hidden; }
+.vbar i { display: block; width: 0; height: 100%; border-radius: 2px; background: var(--grad); transition: width .2s linear; }
