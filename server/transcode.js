@@ -17,7 +17,7 @@ import fs from 'node:fs';
 export const FFMPEG_ARGS = (input, output) => [
   '-y', '-i', input,
   '-vf', "scale='if(gt(a,480/854),480,-2)':'if(gt(a,480/854),-2,854)',fps=30",
-  '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.0',
+  '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'baseline', '-level', '3.0',
   '-crf', '27', '-maxrate', '450k', '-bufsize', '900k',
   '-pix_fmt', 'yuv420p',
   '-c:a', 'aac', '-b:a', '48k', '-ac', '1', '-ar', '44100',
@@ -85,7 +85,7 @@ export async function muxAudio(videoPath, audioPath, outPath) {
     '-y', '-i', videoPath, '-i', audioPath,
     '-map', '0:v:0', '-map', '1:a:0',
     '-vf', PORTRAIT_SCALE,
-    '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.0',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'baseline', '-level', '3.0',
     '-crf', '27', '-maxrate', '450k', '-bufsize', '900k', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '48k', '-ac', '1', '-ar', '44100',
     '-shortest', '-movflags', '+faststart', outPath,
@@ -101,7 +101,7 @@ export async function imageToVideo(imagePath, audioPath, outPath, { maxSeconds =
     await runFfmpeg([
       '-y', '-loop', '1', '-i', imagePath, '-i', audioPath,
       '-vf', IMAGE_FIT,
-      '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.0',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'baseline', '-level', '3.0',
       '-crf', '27', '-maxrate', '450k', '-bufsize', '900k',
       '-c:a', 'aac', '-b:a', '48k', '-ac', '1', '-ar', '44100',
       '-t', String(maxSeconds), '-shortest', '-movflags', '+faststart', outPath,
@@ -110,7 +110,7 @@ export async function imageToVideo(imagePath, audioPath, outPath, { maxSeconds =
     await runFfmpeg([
       '-y', '-loop', '1', '-i', imagePath,
       '-vf', IMAGE_FIT,
-      '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.0',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'baseline', '-level', '3.0',
       '-crf', '27', '-maxrate', '450k', '-bufsize', '900k',
       '-t', String(silentSeconds), '-movflags', '+faststart', outPath,
     ]);
