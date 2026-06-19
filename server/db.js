@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS videos (
   views INTEGER NOT NULL DEFAULT 0,
   likes INTEGER NOT NULL DEFAULT 0,
   deleted INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'ready',
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -154,6 +155,13 @@ try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT'); } catch { /* exists *
 try { db.exec('ALTER TABLE videos ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0'); } catch { /* exists */ }
 try { db.exec('ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0'); } catch { /* exists */ }
 try { db.exec('ALTER TABLE videos ADD COLUMN sound TEXT'); } catch { /* exists */ }
+// Background transcoding: a freshly uploaded video is 'processing' until ffmpeg
+// finishes, then becomes 'ready' (or 'failed'). Old rows default to 'ready'.
+try { db.exec("ALTER TABLE videos ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'"); } catch { /* exists */ }
+// Any video left 'processing' was interrupted by a restart (e.g. Render
+// spinning the instance down mid-encode). Its temp input is gone, so it can't
+// finish — mark it failed so the owner can retry instead of waiting forever.
+try { db.exec("UPDATE videos SET status='failed' WHERE status='processing'"); } catch { /* column may not exist on very old schema */ }
 
 export function getBalance(account) {
   const row = db.prepare('SELECT COALESCE(SUM(amount),0) AS bal FROM ledger WHERE account = ?').get(account);

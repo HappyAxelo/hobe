@@ -136,17 +136,22 @@ app.post('/api/me/avatar', async (req, res) => {
 app.get('/api/creators/:id', (req, res) => {
   const creator = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
   if (!creator) return sendJson(res, 404, { error: 'Not found' });
-  const videos = db.prepare('SELECT * FROM videos WHERE user_id=? AND deleted=0 ORDER BY created_at DESC').all(creator.id);
+  const viewer = currentUser(req);
+  const isOwner = viewer && Number(viewer.id) === Number(creator.id);
+  // The owner sees their own still-processing (and failed) uploads; everyone
+  // else only sees ready ones.
+  const videos = db.prepare(
+    `SELECT * FROM videos WHERE user_id=? AND deleted=0 ${isOwner ? '' : "AND status='ready'"} ORDER BY created_at DESC`
+  ).all(creator.id);
   const products = db.prepare('SELECT * FROM products WHERE creator_id=? AND active=1').all(creator.id);
   const reposts = db.prepare(`
     SELECT v.*, u.name AS creator_name, u.handle AS creator_handle, u.color AS creator_color, u.avatar AS creator_avatar
     FROM reposts r JOIN videos v ON v.id = r.video_id JOIN users u ON u.id = v.user_id
-    WHERE r.user_id=? AND v.deleted=0 ORDER BY r.id DESC
+    WHERE r.user_id=? AND v.deleted=0 AND v.status='ready' ORDER BY r.id DESC
   `).all(creator.id);
   const tipsTotal = Number(db.prepare(`
     SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE type='tip' AND status='success' AND payee_user_id=?
   `).get(creator.id).s);
-  const viewer = currentUser(req);
   const followers = Number(db.prepare('SELECT COUNT(*) c FROM follows WHERE creator_id=?').get(creator.id).c);
   const following = viewer ? !!db.prepare('SELECT 1 FROM follows WHERE follower_id=? AND creator_id=?').get(viewer.id, creator.id) : false;
   sendJson(res, 200, { ...publicUser(creator), videos, products, reposts, tips_total: tipsTotal, followers, following });
@@ -162,7 +167,7 @@ app.get('/api/feed', (req, res) => {
       (SELECT COUNT(*) FROM saves sv WHERE sv.video_id=v.id) AS save_count,
       u.verified AS creator_verified
     FROM videos v JOIN users u ON u.id = v.user_id
-    WHERE v.kind = ? AND v.deleted = 0
+    WHERE v.kind = ? AND v.deleted = 0 AND v.status = 'ready'
     ORDER BY v.created_at DESC LIMIT 200
   `).all(kind);
   const fuser = currentUser(req);
@@ -179,6 +184,44 @@ app.get('/api/feed', (req, res) => {
   }
   rows.sort((a, b) => b.score - a.score);
   sendJson(res, 200, rows.slice(0, 50));
+});
+
+// ---------- search ----------
+// Matches video captions/#tags (stored in title) and creator name/handle.
+app.get('/api/search', (req, res) => {
+  const term = String(req.query.q || '').replace(/[%_\\]/g, ' ').trim();
+  if (!term) return sendJson(res, 200, { creators: [], videos: [] });
+  const like = `%${term}%`;
+
+  const creators = db.prepare(`
+    SELECT id, name, handle, color, avatar, verified,
+      (SELECT COUNT(*) FROM follows f WHERE f.creator_id = users.id) AS followers
+    FROM users
+    WHERE name LIKE ? OR handle LIKE ?
+    ORDER BY followers DESC, name LIMIT 20
+  `).all(like, like);
+
+  const videos = db.prepare(`
+    SELECT v.*, u.name AS creator_name, u.handle AS creator_handle, u.color AS creator_color, u.avatar AS creator_avatar,
+      (SELECT COUNT(*) FROM transactions t WHERE t.video_id=v.id AND t.type='tip' AND t.status='success') AS tip_count,
+      (SELECT COUNT(*) FROM reposts r WHERE r.video_id=v.id) AS repost_count,
+      (SELECT COUNT(*) FROM saves sv WHERE sv.video_id=v.id) AS save_count,
+      u.verified AS creator_verified
+    FROM videos v JOIN users u ON u.id = v.user_id
+    WHERE v.deleted=0 AND v.status='ready'
+      AND (v.title LIKE ? OR u.handle LIKE ? OR u.name LIKE ?)
+    ORDER BY v.created_at DESC LIMIT 40
+  `).all(like, like, like);
+
+  const fuser = currentUser(req);
+  if (fuser) {
+    const rep = new Set(db.prepare('SELECT video_id FROM reposts WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
+    const sav = new Set(db.prepare('SELECT video_id FROM saves WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
+    const fol = new Set(db.prepare('SELECT creator_id FROM follows WHERE follower_id=?').all(fuser.id).map((x) => x.creator_id));
+    for (const r of videos) { r.reposted = rep.has(r.id); r.saved = sav.has(r.id); r.following = fol.has(r.user_id); }
+    for (const c of creators) c.following = fol.has(c.id);
+  }
+  sendJson(res, 200, { creators, videos });
 });
 
 app.post('/api/videos/:id/view', (req, res) => {
@@ -218,7 +261,7 @@ app.get('/api/saved', (req, res) => {
       (SELECT COUNT(*) FROM transactions t WHERE t.video_id=v.id AND t.type='tip' AND t.status='success') AS tip_count,
       (SELECT COUNT(*) FROM reposts r WHERE r.video_id=v.id) AS repost_count
     FROM saves s JOIN videos v ON v.id = s.video_id JOIN users u ON u.id = v.user_id
-    WHERE s.user_id=? AND v.deleted=0 ORDER BY s.id DESC
+    WHERE s.user_id=? AND v.deleted=0 AND v.status='ready' ORDER BY s.id DESC
   `).all(user.id);
   for (const r of rows) r.saved = true;
   sendJson(res, 200, rows);
@@ -246,33 +289,59 @@ app.post('/api/videos', async (req, res) => {
   const user = requireUser(req);
   const tmp = path.join(config.dataDir, 'tmp');
   const { fields, files } = await parseUpload(req, tmp);
-  const cleanup = []; // temp inputs to remove afterwards (never the served output)
+  const cleanup = []; // temp inputs to remove once the background job is done
+
+  const mediaFile = files.find((f) => f.field === 'video' || f.field === 'image' || f.field === 'media');
+  if (!mediaFile) {
+    for (const f of files) fs.rm(f.path, { force: true }, () => {});
+    return sendJson(res, 400, { error: 'No video or image file' });
+  }
+  cleanup.push(mediaFile.path);
+  const isImage = mediaFile.field === 'image' || /\.(jpe?g|png|webp|gif|heic|bmp)$/i.test(mediaFile.filename || '');
+
+  // Soundtrack: an uploaded audio file, or a chosen library track.
+  let audioPath = null;
+  let sound = 'Original sound';
+  const audioFile = files.find((f) => f.field === 'audio');
+  if (audioFile) { audioPath = audioFile.path; cleanup.push(audioPath); sound = 'Original audio'; }
+  else if (fields.track_id) {
+    const track = db.prepare('SELECT * FROM tracks WHERE id=?').get(Number(fields.track_id));
+    if (track) {
+      sound = track.artist ? `${track.title} · ${track.artist}` : track.title;
+      const tp = await localTrackPath(track.filename, tmp);
+      if (tp) { audioPath = tp; if (tp.startsWith(tmp)) cleanup.push(tp); } // shared assets aren't in tmp — don't delete them
+    }
+  }
+
   const filename = `v${Date.now()}.mp4`;
   const outPath = path.join(videosDir, filename);
+
+  // Save the row as 'processing' and reply straight away. The heavy ffmpeg
+  // encode + upload runs in the background, so posting feels instant; the feed
+  // only shows videos once they flip to 'ready'.
+  const info = db.prepare(`
+    INSERT INTO videos (user_id, title, kind, lang, filename, sound, status)
+    VALUES (?, ?, ?, ?, ?, ?, 'processing')
+  `).run(user.id, fields.title || 'Untitled', fields.kind === 'learn' ? 'learn' : 'watch', fields.lang || 'rw', filename, sound);
+  const videoId = Number(info.lastInsertRowid);
+  sendJson(res, 200, db.prepare('SELECT * FROM videos WHERE id=?').get(videoId));
+
+  processUpload({ videoId, isImage, mediaPath: mediaFile.path, audioPath, outPath, filename, cleanup })
+    .catch((e) => {
+      console.error(`[upload] video ${videoId} transcode failed:`, e?.message || e);
+      try { db.prepare("UPDATE videos SET status='failed' WHERE id=?").run(videoId); } catch { /* db gone */ }
+      fs.rm(outPath, { force: true }, () => {});
+      for (const f of cleanup) fs.rm(f, { force: true }, () => {});
+    });
+});
+
+// Background worker: encode, store, then mark the video ready. ffmpeg runs as a
+// child process so this never blocks the event loop or other requests.
+async function processUpload({ videoId, isImage, mediaPath, audioPath, outPath, filename, cleanup }) {
   try {
-    const mediaFile = files.find((f) => f.field === 'video' || f.field === 'image' || f.field === 'media');
-    if (!mediaFile) return sendJson(res, 400, { error: 'No video or image file' });
-    cleanup.push(mediaFile.path);
-    const isImage = mediaFile.field === 'image' || /\.(jpe?g|png|webp|gif|heic|bmp)$/i.test(mediaFile.filename || '');
-
-    // Soundtrack: an uploaded audio file, or a chosen library track.
-    let audioPath = null;
-    let sound = 'Original sound';
-    const audioFile = files.find((f) => f.field === 'audio');
-    if (audioFile) { audioPath = audioFile.path; cleanup.push(audioPath); sound = 'Original audio'; }
-    else if (fields.track_id) {
-      const track = db.prepare('SELECT * FROM tracks WHERE id=?').get(Number(fields.track_id));
-      if (track) {
-        sound = track.artist ? `${track.title} · ${track.artist}` : track.title;
-        const tp = await localTrackPath(track.filename, tmp);
-        if (tp) { audioPath = tp; if (tp.startsWith(tmp)) cleanup.push(tp); }
-      }
-    }
-
-    let transcoded;
-    if (isImage) ({ transcoded } = await imageToVideo(mediaFile.path, audioPath, outPath));
-    else if (audioPath) ({ transcoded } = await muxAudio(mediaFile.path, audioPath, outPath));
-    else ({ transcoded } = await transcode(mediaFile.path, outPath));
+    if (isImage) await imageToVideo(mediaPath, audioPath, outPath);
+    else if (audioPath) await muxAudio(mediaPath, audioPath, outPath);
+    else await transcode(mediaPath, outPath);
 
     const duration = await probeDuration(outPath);
     const size = fs.statSync(outPath).size;
@@ -281,18 +350,17 @@ app.post('/api/videos', async (req, res) => {
       await putObject(`videos/${filename}`, fs.readFileSync(outPath), 'video/mp4');
       fs.rmSync(outPath, { force: true }); // R2 holds the canonical copy now
     }
-
-    const info = db.prepare(`
-      INSERT INTO videos (user_id, title, kind, lang, filename, duration_s, size_bytes, sound)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(user.id, fields.title || 'Untitled', fields.kind === 'learn' ? 'learn' : 'watch', fields.lang || 'rw', filename, duration, size, sound);
-    sendJson(res, 200, { ...db.prepare('SELECT * FROM videos WHERE id=?').get(Number(info.lastInsertRowid)), transcoded });
-  } catch (e) {
-    fs.rm(outPath, { force: true }, () => {}); // drop a half-written output on failure
-    throw e;
+    db.prepare("UPDATE videos SET status='ready', duration_s=?, size_bytes=? WHERE id=?").run(duration, size, videoId);
   } finally {
     for (const f of cleanup) fs.rm(f, { force: true }, () => {});
   }
+}
+
+// Single video — used by the client to poll until a fresh upload is ready.
+app.get('/api/videos/:id', (req, res) => {
+  const v = db.prepare('SELECT id, user_id, title, kind, lang, filename, duration_s, status, created_at FROM videos WHERE id=? AND deleted=0').get(Number(req.params.id));
+  if (!v) return sendJson(res, 404, { error: 'Not found' });
+  sendJson(res, 200, v);
 });
 
 function ownVideo(req) {
@@ -422,6 +490,19 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
+// ---------- health / durability ----------
+// Lets you confirm whether posts are stored durably. durable=false means the
+// host has only ephemeral disk and uploads will be lost on restart.
+app.get('/api/health', (req, res) => {
+  sendJson(res, 200, {
+    ok: true,
+    storage: storageMode,
+    durable: storageMode === 'r2',
+    provider: provider.name,
+    videos: Number(db.prepare('SELECT COUNT(*) c FROM videos WHERE deleted=0').get().c),
+  });
+});
+
 // ---------- static ----------
 if (storageMode === 'r2') {
   // Media lives in R2; redirect or proxy from there.
@@ -436,6 +517,9 @@ if (storageMode === 'r2') {
 app.static('/', path.join(config.root, 'public'), 3600);
 
 if (process.env.NODE_ENV !== 'test') {
+  if (storageMode !== 'r2') {
+    console.warn('WARNING: storage is LOCAL (ephemeral). On a host with an ephemeral disk (e.g. Render free tier) uploaded videos and the database are WIPED on every restart. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET to make posts durable.');
+  }
   startSettlementWorker(1000);
   ensureTracks().catch((e) => console.error('Track seeding failed:', e.message));
   app.listen(config.port, () => {

@@ -177,6 +177,7 @@ function openAccountSheet() {
 }
 
 $('#userpill').onclick = () => (me ? openAccountSheet() : openLoginSheet());
+const __searchbtn = $('#searchbtn'); if (__searchbtn) __searchbtn.onclick = () => renderSearch();
 
 // ---------- polling a transaction to completion ----------
 function pollTxn(id, { timeoutMs = 30000 } = {}) {
@@ -236,6 +237,60 @@ async function renderSaved() {
   if (!me) return openLoginSheet(() => renderSaved());
   mountFeed(await api('/api/saved'), 'watch',
     `<div class="empty"><p>No saved videos yet.</p><p>Tap the bookmark on any video to save it here.</p></div>`);
+}
+
+// ---------- search ----------
+let searchTimer;
+function renderSearch(initial = '') {
+  observer?.disconnect();
+  view.innerHTML = `
+  <div class="panel">
+    <div style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.07);border-radius:12px;padding:11px 13px;margin:4px 0 14px">
+      <svg class="ic" style="opacity:.55;flex:none"><use href="#i-search"/></svg>
+      <input id="searchq" type="search" placeholder="Search videos, people, #tags" autocomplete="off" autocapitalize="off"
+        style="flex:1;background:none;border:none;outline:none;color:inherit;font-size:16px" value="${esc(initial)}">
+    </div>
+    <div id="searchresults"><p class="dim center" style="margin-top:26px">Find creators and videos on Hobe.</p></div>
+  </div>`;
+  const input = $('#searchq');
+  const box = $('#searchresults');
+  const run = async () => {
+    const q = input.value.trim();
+    if (!q) { box.innerHTML = '<p class="dim center" style="margin-top:26px">Find creators and videos on Hobe.</p>'; return; }
+    try {
+      const { creators, videos } = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      if (!creators.length && !videos.length) {
+        box.innerHTML = `<p class="dim center" style="margin-top:26px">No results for "${esc(q)}".</p>`;
+        return;
+      }
+      const people = creators.length ? `<h3>People</h3>` + creators.map((c) => `
+        <div class="card row searchuser" data-creator="${c.id}" style="cursor:pointer">
+          <div class="who">${avatarHtml(c, 42)}
+            <div><div style="display:flex;align-items:center;gap:4px">${esc(c.name)}${Number(c.verified) ? '<svg class="vrf"><use href="#i-verified"/></svg>' : ''}</div>
+            <div class="dim">@${esc(c.handle)} · ${fmt(c.followers || 0)} followers</div></div></div>
+        </div>`).join('') : '';
+      const vids = videos.length ? `<h3>Videos</h3>` + videos.map((v) => {
+        const { caption, tags } = parseTags(v.title);
+        const label = caption || tags.join(' ') || 'Untitled';
+        return `<div class="card row searchvid" data-vid="${v.id}" style="cursor:pointer">
+          <div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(label)}</div>
+            <div class="dim">@${esc(v.creator_handle)} · ${fmt(v.likes)} likes · ${fmt(v.tip_count || 0)} tips</div></div>
+          <span style="flex:none;color:var(--gold)">${icon('i-play')}</span>
+        </div>`;
+      }).join('') : '';
+      box.innerHTML = people + vids;
+      box.querySelectorAll('.searchuser').forEach((el) => { el.onclick = () => renderProfile(Number(el.dataset.creator)); });
+      box.querySelectorAll('.searchvid').forEach((el) => { el.onclick = () => {
+        const id = Number(el.dataset.vid);
+        const ordered = [videos.find((x) => x.id === id), ...videos.filter((x) => x.id !== id)];
+        mountFeed(ordered, 'watch', '');
+      }; });
+    } catch (err) { box.innerHTML = `<p class="dim center" style="margin-top:26px">${esc(err.message)}</p>`; }
+  };
+  input.oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(run, 300); };
+  input.onsearch = run;
+  input.focus();
+  if (initial) run();
 }
 
 function slideHtml(v, kind) {
@@ -424,7 +479,7 @@ async function renderProfile(creatorId) {
     ${c.videos.map((v) => `
       <div class="card row" data-mvid="${v.id}" data-mtitle="${esc(v.title)}">
         <div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v.title)}</div>
-          <div class="dim">${fmt(v.views)} views · ${fmt(v.likes)} likes</div></div>
+          <div class="dim">${v.status === 'processing' ? 'Processing…' : v.status === 'failed' ? 'Upload failed — delete and try again' : `${fmt(v.views)} views · ${fmt(v.likes)} likes`}</div></div>
         ${mine ? `<div style="display:flex;gap:8px;flex:none">
           <button class="ghost editvid" title="Edit caption">${icon('i-edit')}</button>
           <button class="ghost delvid" title="Delete video" style="color:var(--bad)">${icon('i-trash')}</button>
@@ -710,16 +765,30 @@ async function renderUpload() {
     if (audio) fd.append('audio', audio);
     else if ($('#vtrack').value) fd.append('track_id', $('#vtrack').value);
     const btn = $('#upbtn');
-    btn.disabled = true; btn.textContent = 'Posting & compressing…';
+    btn.disabled = true; btn.textContent = 'Uploading…';
     try {
       const v = await api('/api/videos', { method: 'POST', body: fd });
-      toast('Posted');
-      setTab(v.kind);
+      toast('Posted! Processing your video…');
+      renderProfile(me.id); // they see it straight away, marked Processing
+      pollProcessing(v.id);
     } catch (err) {
       toast(err.message);
       btn.disabled = false; btn.textContent = 'Post';
     }
   };
+}
+
+// After an instant post, quietly check until the background encode finishes,
+// then refresh the profile so the video flips from "Processing…" to live.
+function pollProcessing(id, tries = 0) {
+  if (tries > 40) return; // give up after ~2 min; a reload will still show it
+  setTimeout(async () => {
+    let v;
+    try { v = await api(`/api/videos/${id}`); }
+    catch { return pollProcessing(id, tries + 1); }
+    if (v.status === 'processing') return pollProcessing(id, tries + 1);
+    toast(v.status === 'ready' ? 'Your video is live' : 'That upload could not be processed — please try again');
+  }, 3000);
 }
 
 // ---------- tabs ----------

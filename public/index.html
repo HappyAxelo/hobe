@@ -36,12 +36,16 @@
     <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M6.5 3.5h11a1 1 0 0 1 1 1V21l-6.5-3.1L5.5 21V4.5a1 1 0 0 1 1-1z"/></symbol>
     <symbol id="i-music" viewBox="0 0 24 24"><path d="M19 4.2 9 6.4v9.1a3.2 3.2 0 1 0 2 3V9.9l6-1.3v4.7a3.2 3.2 0 1 0 2 3V4.2z"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M9 3.5a1 1 0 0 0-1 1V5H4v2h16V5h-4v-.5a1 1 0 0 0-1-1H9zM5.5 8.5l1 11A2 2 0 0 0 8.5 21.5h7a2 2 0 0 0 2-2l1-11h-2l-.9 10.5a.5.5 0 0 1-.5.5h-6.2a.5.5 0 0 1-.5-.5L7.5 8.5h-2z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><path d="M10.5 3.5a7 7 0 1 0 4.2 12.57l4.09 4.09 1.41-1.41-4.09-4.09A7 7 0 0 0 10.5 3.5zm0 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10z"/></symbol>
   </defs>
 </svg>
 
 <header id="topbar">
   <div class="logo">hobe<span class="logodot">.</span></div>
-  <button id="userpill" class="pill">…</button>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button id="searchbtn" class="pill" aria-label="Search" style="padding:8px 10px"><svg class="ic"><use href="#i-search"/></svg></button>
+    <button id="userpill" class="pill">…</button>
+  </div>
 </header>
 
 <main id="view"></main>
