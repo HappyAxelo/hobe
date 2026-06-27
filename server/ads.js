@@ -145,6 +145,27 @@ export function registerAds(app, deps) {
     sendJson(res, 200, db.prepare('SELECT * FROM ad_campaigns WHERE id=?').get(Number(info.lastInsertRowid)));
   });
 
+  // Promote an existing video as an ad (Boost): reuses its already-transcoded
+  // renditions, no re-upload. Goes through the same review + activation flow.
+  app.post('/api/ads/promote', (req, res) => {
+    const user = requireUser(req);
+    const b = req.body ?? {};
+    const video = db.prepare("SELECT * FROM videos WHERE id=? AND deleted=0 AND status='ready'").get(Number(b.video_id));
+    if (!video) return sendJson(res, 404, { error: 'Video not found' });
+    if (Number(video.user_id) !== Number(user.id)) return sendJson(res, 403, { error: 'You can only promote your own video' });
+    const budget = Math.max(0, Math.floor(Number(b.budget_rwf) || 0));
+    if (!budget) return sendJson(res, 400, { error: 'Enter a budget' });
+    const adv = advertiserFor(user, b.company_name || user.name);
+    const info = db.prepare(`INSERT INTO ad_campaigns (advertiser_id, name, status, cpm_rate_rwf, budget_rwf) VALUES (?,?, 'pending_review', ?,?)`)
+      .run(adv.id, String(b.name || 'Promoted post').slice(0, 120), DEFAULT_CPM_RWF, budget);
+    const cid = Number(info.lastInsertRowid);
+    db.prepare(`INSERT INTO ads (campaign_id, kind, filename, renditions, status, headline, caption, cta_label, cta_url)
+      VALUES (?, 'video', ?, ?, 'ready', ?, ?, ?, ?)`).run(
+      cid, video.filename, video.renditions || null, String(user.name).slice(0, 80), String(video.title || '').slice(0, 200),
+      b.cta_label ? String(b.cta_label).slice(0, 24) : 'Learn more', b.cta_url ? String(b.cta_url).slice(0, 300) : '');
+    sendJson(res, 200, db.prepare('SELECT * FROM ad_campaigns WHERE id=?').get(cid));
+  });
+
   // Upload the ad creative (image or video) for a campaign.
   app.post('/api/ads/campaigns/:id/creative', async (req, res) => {
     const c = ownCampaign(req);

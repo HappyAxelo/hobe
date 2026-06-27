@@ -377,7 +377,9 @@ function slideHtml(v, kind) {
       <button class="railbtn ${v.reposted ? 'on' : ''}" data-act="repost">${icon('i-repost')}<span class="cnt">${fmt(v.repost_count || 0)}</span></button>
       <button class="railbtn" data-act="share">${icon('i-share')}<span class="cnt">Share</span></button>
       <button class="railbtn mutebtn" data-act="sound">${icon('i-mute')}</button>
-      <button class="railbtn small" data-act="report" title="Report this video">${icon('i-flag')}</button>
+      ${me && Number(v.user_id) === Number(me.id)
+        ? `<button class="railbtn small" data-act="more" title="More">${icon('i-more')}</button>`
+        : `<button class="railbtn small" data-act="report" title="Report this video">${icon('i-flag')}</button>`}
     </div>
     <div class="creatorcard">
       <div class="cc-head">
@@ -459,6 +461,8 @@ async function feedClick(e) {
     } catch (err) { toast(err.message); }
   } else if (act === 'comment') {
     openComments(videoId);
+  } else if (act === 'more') {
+    openVideoMenu(videoId);
   } else if (act === 'profile') {
     renderProfile(Number(slide.dataset.creator));
   }
@@ -914,16 +918,20 @@ async function renderAdvertiser() {
 function campaignCard(c) {
   const pct = c.budget_rwf ? Math.min(100, Math.round(((c.spent_rwf || 0) / c.budget_rwf) * 100)) : 0;
   const ready = c.ad && c.ad.status === 'ready';
+  const statusText = { pending_review: 'Waiting for review', approved: 'Approved \u2014 starting soon', active: 'Live in the feed', paused: 'Paused', rejected: 'Rejected', ended: 'Ended' }[c.status] || c.status;
   return `<div class="card" data-camp="${c.id}">
-    <div class="row"><b>${esc(c.name)}</b><span class="dim">${esc(c.status)}</span></div>
+    <div class="row"><b>${esc(c.name)}</b><span class="dim">${esc(statusText)}</span></div>
     <div class="dim" style="font-size:13px;margin-top:4px">${fmt(c.impressions || 0)} views \u00b7 ${fmt(c.clicks || 0)} clicks \u00b7 ${c.ctr || 0}% CTR</div>
     <div class="dim" style="font-size:13px">Spent ${fmt(c.spent_rwf || 0)} / ${fmt(c.budget_rwf)} RWF</div>
     <div style="height:6px;background:rgba(255,255,255,.1);border-radius:3px;margin:6px 0"><i style="display:block;height:100%;width:${pct}%;background:var(--gold);border-radius:3px"></i></div>
-    ${ready ? `<div class="dim" style="font-size:13px">Ad ready ${c.ad.headline ? '\u00b7 ' + esc(c.ad.headline) : ''}</div>` : `<input type="file" accept="video/*,image/*" class="adfile" style="display:none"><button class="ghost upcreative" style="width:100%">${c.ad ? 'Ad ' + esc(c.ad.status) + ' \u2014 replace' : 'Upload ad creative'}</button>`}
+    ${ready
+      ? `<div style="display:flex;gap:10px;align-items:center">${c.ad.filename ? `<video class="adpreview" src="${adSrc(c.ad)}" muted loop playsinline></video>` : ''}<span class="dim" style="font-size:12.5px">${c.status === 'active' ? 'Your ad is live, shown once every 5 videos in the feed.' : 'Your ad is ready. It runs in the feed once approved.'}</span></div>`
+      : `<input type="file" accept="video/*,image/*" class="adfile" style="display:none"><button class="ghost upcreative" style="width:100%">${c.ad ? 'Ad ' + esc(c.ad.status) + ' \u2014 replace' : 'Upload ad creative (image or video)'}</button>`}
   </div>`;
 }
 
 function bindCampaignCards() {
+  view.querySelectorAll('.adpreview').forEach((v) => { v.onclick = () => (v.paused ? v.play() : v.pause()); });
   view.querySelectorAll('[data-camp]').forEach((card) => {
     const id = card.dataset.camp;
     const btn = card.querySelector('.upcreative'); const file = card.querySelector('.adfile');
@@ -976,6 +984,49 @@ function adminCard(c) {
       <button class="chip" data-status="rejected">Reject</button>
     </div>
   </div>`;
+}
+
+// ---------- own video: menu, delete, promote ----------
+function openVideoMenu(videoId) {
+  openSheet(`
+    <h2>Your video</h2>
+    <button class="ghost" id="vm-promote" style="width:100%;margin-top:6px">Promote as ad</button>
+    <button class="ghost" id="vm-delete" style="width:100%;margin-top:8px;color:var(--bad)">Delete video</button>
+  `);
+  $('#vm-promote').onclick = () => { closeSheet(); openPromoteSheet(videoId); };
+  $('#vm-delete').onclick = async () => {
+    if (!confirm('Delete this video? This cannot be undone.')) return;
+    try { await api(`/api/videos/${videoId}/delete`, { method: 'POST' }); closeSheet(); toast('Video deleted'); setTab('watch'); }
+    catch (err) { toast(err.message); }
+  };
+}
+
+function openPromoteSheet(videoId) {
+  openSheet(`
+    <h2>Promote this video</h2>
+    <p class="dim">Run your video as an ad in the feed. You pay per 1,000 views (CPM). We review it before it goes live, and you track it under "Advertise on Hobe".</p>
+    <label>Budget (RWF)</label>
+    <input id="pbudget" inputmode="numeric" placeholder="e.g. 20000">
+    <label>Link when tapped (optional)</label>
+    <input id="pcta" placeholder="https://... (optional)">
+    <button class="primary" id="pgo" style="margin-top:10px">Submit for review</button>
+  `);
+  $('#pgo').onclick = async () => {
+    const budget = Number($('#pbudget').value.replace(/[^0-9]/g, ''));
+    if (!budget) return toast('Enter a budget');
+    const btn = $('#pgo'); btn.disabled = true;
+    try {
+      await api('/api/ads/promote', { method: 'POST', json: { video_id: videoId, budget_rwf: budget, cta_url: $('#pcta').value.trim() || undefined } });
+      closeSheet(); toast('Submitted for review. Track it under Advertise on Hobe.');
+    } catch (err) { toast(err.message); btn.disabled = false; }
+  };
+}
+
+function adSrc(ad) {
+  let r = null; try { r = ad.renditions ? JSON.parse(ad.renditions) : null; } catch {}
+  if (!r || !r.length) return `/videos/${ad.filename}`;
+  const pick = r.includes('480') ? '480' : r[0];
+  return `/videos/${ad.filename}_${pick}.mp4`;
 }
 
 // ---------- comments ----------
