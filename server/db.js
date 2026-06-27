@@ -148,6 +148,60 @@ CREATE TABLE IF NOT EXISTS tracks (
 );
 `);
 
+// ---- Ads platform ----
+db.exec(`
+CREATE TABLE IF NOT EXISTS advertisers (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id),
+  company_name TEXT NOT NULL,
+  contact_name TEXT DEFAULT '',
+  email TEXT DEFAULT '',
+  phone TEXT DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS ad_campaigns (
+  id INTEGER PRIMARY KEY,
+  advertiser_id INTEGER NOT NULL REFERENCES advertisers(id),
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending_review',
+  cpm_rate_rwf INTEGER NOT NULL,
+  budget_rwf INTEGER NOT NULL,
+  spent_rwf INTEGER NOT NULL DEFAULT 0,
+  paid INTEGER NOT NULL DEFAULT 0,
+  starts_at INTEGER,
+  ends_at INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_campaigns_status ON ad_campaigns(status);
+
+CREATE TABLE IF NOT EXISTS ads (
+  id INTEGER PRIMARY KEY,
+  campaign_id INTEGER NOT NULL REFERENCES ad_campaigns(id),
+  kind TEXT NOT NULL DEFAULT 'video',
+  filename TEXT,
+  renditions TEXT,
+  status TEXT NOT NULL DEFAULT 'processing',
+  headline TEXT DEFAULT '',
+  caption TEXT DEFAULT '',
+  cta_label TEXT DEFAULT 'Learn more',
+  cta_url TEXT DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_ads_campaign ON ads(campaign_id);
+
+CREATE TABLE IF NOT EXISTS ad_events (
+  id INTEGER PRIMARY KEY,
+  ad_id INTEGER NOT NULL REFERENCES ads(id),
+  campaign_id INTEGER NOT NULL REFERENCES ad_campaigns(id),
+  type TEXT NOT NULL,
+  user_id INTEGER REFERENCES users(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_adevents_ad ON ad_events(ad_id);
+CREATE INDEX IF NOT EXISTS idx_adevents_campaign ON ad_events(campaign_id);
+`);
+
 // Migrations for databases created before these columns existed
 // (e.g. the live Fly volume). Safe to re-run.
 try { db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT'); } catch { /* exists */ }
@@ -162,6 +216,10 @@ try { db.exec("ALTER TABLE videos ADD COLUMN status TEXT NOT NULL DEFAULT 'ready
 // spinning the instance down mid-encode). Its temp input is gone, so it can't
 // finish — mark it failed so the owner can retry instead of waiting forever.
 try { db.exec("UPDATE videos SET status='failed' WHERE status='processing'"); } catch { /* column may not exist on very old schema */ }
+// Adaptive quality: a JSON array of available rendition labels e.g. ["480","720","1080"].
+try { db.exec('ALTER TABLE videos ADD COLUMN renditions TEXT'); } catch { /* exists */ }
+// Ad review access.
+try { db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0'); } catch { /* exists */ }
 
 export function getBalance(account) {
   const row = db.prepare('SELECT COALESCE(SUM(amount),0) AS bal FROM ledger WHERE account = ?').get(account);

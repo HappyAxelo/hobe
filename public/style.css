@@ -310,3 +310,20 @@ input:focus, select:focus { box-shadow: 0 0 0 3px rgba(255,198,46,.15); }
 .vbar { position: absolute; left: 12px; right: 12px; bottom: calc(var(--nav-h) + 14px);
   height: 3px; border-radius: 2px; background: rgba(255,255,255,.18); overflow: hidden; }
 .vbar i { display: block; width: 0; height: 100%; border-radius: 2px; background: var(--grad); transition: width .2s linear; }
+
+/* ---------- ads ---------- */
+.sponsored { font-size: 10.5px; font-weight: 700; background: rgba(255,255,255,.18); padding: 1px 6px; border-radius: 4px; vertical-align: middle; margin-left: 4px; letter-spacing: .3px; }
+.adcta {
+  margin-top: 10px; background: var(--gold); color: #1a1400; border: none; font-weight: 800;
+  padding: 10px 18px; border-radius: 12px; font-size: 15px; cursor: pointer; box-shadow: var(--glow);
+}
+.adcta:active { transform: scale(.97); }
+.slide.ad .creatorcard { padding-bottom: 16px; }
+
+/* ---------- desktop: centred TikTok-style player ---------- */
+@media (min-width: 700px) {
+  #view { display: flex; align-items: stretch; justify-content: center; background: #000; }
+  .feed { height: 100%; width: min(440px, calc(100vh * 9 / 16)); }
+  .slide { width: 100%; }
+  .slide video { border-radius: 16px; }
+}

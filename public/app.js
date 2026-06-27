@@ -12,6 +12,29 @@ function parseTags(text) {
   return { caption, tags };
 }
 
+// ---------- video quality (adaptive renditions) ----------
+function qualityPref() { return localStorage.getItem('hobe_quality') || 'auto'; }
+function chosenRendition() {
+  const pref = qualityPref();
+  if (pref === 'high') return '1080';
+  if (pref === 'low') return '480';
+  const c = navigator.connection || {};
+  if (c.saveData) return '480';
+  const et = c.effectiveType || '';
+  if (et === 'slow-2g' || et === '2g' || et === '3g') return '480';
+  const small = Math.min(screen.width || 9999, screen.height || 9999) <= 480;
+  return small ? '720' : '1080';
+}
+function videoSrc(v) {
+  let r = null; try { r = v.renditions ? JSON.parse(v.renditions) : null; } catch {}
+  if (!r || !r.length) return `/videos/${v.filename}`;
+  const order = ['1080', '720', '480'];
+  const want = chosenRendition();
+  let pick = r.includes(want) ? want : null;
+  if (!pick) { const wi = order.indexOf(want); pick = order.slice(wi).find((x) => r.includes(x)) || order.find((x) => r.includes(x)) || r[r.length - 1]; }
+  return `/videos/${v.filename}_${pick}.mp4`;
+}
+
 // ---------- state ----------
 let me = null;
 let token = localStorage.getItem('hobe_token') || null;
@@ -143,6 +166,16 @@ function openAccountSheet() {
     <input type="file" id="avfile" accept="image/*" style="display:none">
     ${me.avatar ? '' : '<button class="primary" id="addphoto" style="width:100%;margin-top:14px">Add a profile photo</button>'}
     <button class="ghost" id="myprofile" style="width:100%;margin-top:10px">My videos & profile</button>
+    <button class="ghost" id="advertise" style="width:100%;margin-top:8px">Advertise on Hobe</button>
+    ${me.is_admin ? '<button class="ghost" id="adadmin" style="width:100%;margin-top:8px">Ad review (admin)</button>' : ''}
+    <div style="margin-top:12px">
+      <label style="font-size:13px">Video quality</label>
+      <div class="chips" id="qchips">
+        <button class="chip" data-q="auto">Auto</button>
+        <button class="chip" data-q="high">HD</button>
+        <button class="chip" data-q="low">Data saver</button>
+      </div>
+    </div>
     <button class="ghost" id="savedvids" style="width:100%;margin-top:8px">Saved videos</button>
     <button class="ghost" id="dologout" style="width:100%;margin-top:8px">Log out</button>
     <p class="dim center" style="margin-top:14px"><a href="/privacy.html" style="color:var(--dim)">Privacy policy</a></p>
@@ -173,6 +206,12 @@ function openAccountSheet() {
     localStorage.removeItem('hobe_token');
     renderUserPill(); closeSheet(); render();
   };
+  const qc = $('#qchips'); if (qc) {
+    const cur = qualityPref();
+    qc.querySelectorAll('.chip').forEach((c) => { c.classList.toggle('on', c.dataset.q === cur); c.onclick = () => { localStorage.setItem('hobe_quality', c.dataset.q); qc.querySelectorAll('.chip').forEach((x) => x.classList.remove('on')); c.classList.add('on'); toast('Quality set'); }; });
+  }
+  const advb = $('#advertise'); if (advb) advb.onclick = () => { closeSheet(); renderAdvertiser(); };
+  const adm = $('#adadmin'); if (adm) adm.onclick = () => { closeSheet(); renderAdmin(); };
   void s;
 }
 
@@ -200,7 +239,7 @@ let observer = null;
 
 function mountFeed(vids, kind, emptyHtml) {
   if (!vids.length) { view.innerHTML = emptyHtml; return; }
-  view.innerHTML = `<div class="feed">${vids.map((v) => slideHtml(v, kind)).join('')}</div>`;
+  view.innerHTML = `<div class="feed">${vids.map((v) => v.is_ad ? adSlideHtml(v) : slideHtml(v, kind)).join('')}</div>`;
 
   observer?.disconnect();
   observer = new IntersectionObserver((entries) => {
@@ -213,10 +252,10 @@ function mountFeed(vids, kind, emptyHtml) {
           const bar = $('.vbar i', en.target);
           if (bar && video.duration) bar.style.width = `${(video.currentTime / video.duration) * 100}%`;
         };
-        const id = en.target.dataset.vid;
         if (!en.target.dataset.viewed) {
           en.target.dataset.viewed = '1';
-          api(`/api/videos/${id}/view`, { method: 'POST' }).catch(() => {});
+          if (en.target.dataset.ad) api(`/api/ads/${en.target.dataset.ad}/impression`, { method: 'POST' }).catch(() => {});
+          else api(`/api/videos/${en.target.dataset.vid}/view`, { method: 'POST' }).catch(() => {});
         }
       } else {
         video.pause();
@@ -226,6 +265,12 @@ function mountFeed(vids, kind, emptyHtml) {
   view.querySelectorAll('.slide').forEach((s) => observer.observe(s));
 
   $('.feed').onclick = feedClick;
+  document.onkeydown = (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const f = $('.feed'); if (!f) return;
+    e.preventDefault();
+    f.scrollBy({ top: (e.key === 'ArrowDown' ? 1 : -1) * f.clientHeight, behavior: 'smooth' });
+  };
 }
 
 async function renderFeed(kind) {
@@ -293,13 +338,36 @@ function renderSearch(initial = '') {
   if (initial) run();
 }
 
+function adSlideHtml(v) {
+  const cap = (v.title || '').trim();
+  return `
+  <section class="slide ad" data-ad="${v.ad_id}" data-cta="${esc(v.cta_url || '')}">
+    <video src="${videoSrc(v)}" loop playsinline preload="auto" muted></video>
+    <div class="scrim"></div>
+    <div class="rail">
+      <button class="railbtn mutebtn" data-act="sound">${icon('i-mute')}</button>
+    </div>
+    <div class="creatorcard">
+      <div class="cc-head">
+        <span class="cc-id">
+          <span class="cc-name">${esc(v.headline || 'Sponsored')} <span class="sponsored">Sponsored</span></span>
+          <span class="cc-handle">Paid partnership</span>
+        </span>
+      </div>
+      ${cap ? `<div class="cc-cap">${esc(cap)}</div>` : ''}
+      ${v.cta_url ? `<button class="adcta" data-act="adcta">${esc(v.cta_label || 'Learn more')} \u2192</button>` : ''}
+    </div>
+    <div class="vbar"><i></i></div>
+  </section>`;
+}
+
 function slideHtml(v, kind) {
   const langNames = { rw: 'Kinyarwanda', en: 'English', fr: 'Français', sw: 'Kiswahili' };
   const { caption, tags } = parseTags(v.title);
   const verified = Number(v.creator_verified) ? `<svg class="vrf"><use href="#i-verified"/></svg>` : '';
   return `
   <section class="slide" data-vid="${v.id}" data-creator="${v.user_id}" data-cname="${esc(v.creator_name)}">
-    <video src="/videos/${v.filename}" loop playsinline preload="${kind === 'watch' ? 'auto' : 'metadata'}" muted></video>
+    <video src="${videoSrc(v)}" loop playsinline preload="${kind === 'watch' ? 'auto' : 'metadata'}" muted></video>
     <div class="scrim"></div>
     <div class="rail">
       <button class="railbtn tipbtn" data-act="tip"><span class="ring">${icon('i-coin')}</span><span class="cnt">Tip</span></button>
@@ -339,6 +407,12 @@ async function feedClick(e) {
   const videoId = Number(slide.dataset.vid);
   const act = btn.dataset.act;
 
+  if (act === 'adcta') {
+    const adId = slide.dataset.ad; const url = slide.dataset.cta;
+    if (adId) api(`/api/ads/${adId}/click`, { method: 'POST' }).catch(() => {});
+    if (url) window.open(url, '_blank', 'noopener');
+    return;
+  }
   if (act === 'like') {
     const r = await api(`/api/videos/${videoId}/like`, { method: 'POST' });
     $('.cnt', btn).textContent = fmt(r.likes);
@@ -789,6 +863,104 @@ function pollProcessing(id, tries = 0) {
     if (v.status === 'processing') return pollProcessing(id, tries + 1);
     toast(v.status === 'ready' ? 'Your video is live' : 'That upload could not be processed — please try again');
   }, 3000);
+}
+
+// ---------- ads: advertiser portal + admin ----------
+async function renderAdvertiser() {
+  if (!me) return openLoginSheet(() => renderAdvertiser());
+  observer?.disconnect();
+  let data = { advertiser: null, campaigns: [] }, rate = { cpm_rate_rwf: 3000 };
+  try { [data, rate] = await Promise.all([api('/api/ads/campaigns'), api('/api/ads/ratecard')]); } catch (err) { toast(err.message); }
+  view.innerHTML = `
+  <div class="panel">
+    <button class="ghost" id="back" style="display:flex;align-items:center;gap:6px">${icon('i-back')} Back</button>
+    <h2 style="margin:12px 0 4px">Advertise on Hobe</h2>
+    <p class="dim" style="font-size:14px">Reach Hobe viewers in the feed. You pay per 1,000 views (CPM): ${fmt(rate.cpm_rate_rwf)} RWF per 1,000. Submit a campaign, we review it, then it goes live once billed.</p>
+    <div class="card" style="margin-top:12px">
+      <h3 style="margin-top:0">New campaign</h3>
+      <label>Company name</label><input id="ccompany" placeholder="Your company" value="${esc(data.advertiser?.company_name || '')}">
+      <label>Campaign name</label><input id="cname" placeholder="e.g. Launch promo">
+      <label>Budget (RWF)</label><input id="cbudget" inputmode="numeric" placeholder="e.g. 50000">
+      <button class="primary" id="createcamp" style="margin-top:10px">Create campaign</button>
+    </div>
+    <h3>Your campaigns</h3>
+    <div id="camplist">${data.campaigns.length ? data.campaigns.map(campaignCard).join('') : '<p class="dim">None yet.</p>'}</div>
+  </div>`;
+  $('#back').onclick = () => setTab(state.tab);
+  $('#createcamp').onclick = async () => {
+    const name = $('#cname').value.trim(); const budget = Number($('#cbudget').value.replace(/[^0-9]/g, ''));
+    if (!name || !budget) return toast('Enter a campaign name and budget');
+    try { await api('/api/ads/campaigns', { method: 'POST', json: { company_name: $('#ccompany').value.trim(), name, budget_rwf: budget } }); toast('Campaign created \u2014 now add your ad'); renderAdvertiser(); }
+    catch (err) { toast(err.message); }
+  };
+  bindCampaignCards();
+}
+
+function campaignCard(c) {
+  const pct = c.budget_rwf ? Math.min(100, Math.round(((c.spent_rwf || 0) / c.budget_rwf) * 100)) : 0;
+  const ready = c.ad && c.ad.status === 'ready';
+  return `<div class="card" data-camp="${c.id}">
+    <div class="row"><b>${esc(c.name)}</b><span class="dim">${esc(c.status)}</span></div>
+    <div class="dim" style="font-size:13px;margin-top:4px">${fmt(c.impressions || 0)} views \u00b7 ${fmt(c.clicks || 0)} clicks \u00b7 ${c.ctr || 0}% CTR</div>
+    <div class="dim" style="font-size:13px">Spent ${fmt(c.spent_rwf || 0)} / ${fmt(c.budget_rwf)} RWF</div>
+    <div style="height:6px;background:rgba(255,255,255,.1);border-radius:3px;margin:6px 0"><i style="display:block;height:100%;width:${pct}%;background:var(--gold);border-radius:3px"></i></div>
+    ${ready ? `<div class="dim" style="font-size:13px">Ad ready ${c.ad.headline ? '\u00b7 ' + esc(c.ad.headline) : ''}</div>` : `<input type="file" accept="video/*,image/*" class="adfile" style="display:none"><button class="ghost upcreative" style="width:100%">${c.ad ? 'Ad ' + esc(c.ad.status) + ' \u2014 replace' : 'Upload ad creative'}</button>`}
+  </div>`;
+}
+
+function bindCampaignCards() {
+  view.querySelectorAll('[data-camp]').forEach((card) => {
+    const id = card.dataset.camp;
+    const btn = card.querySelector('.upcreative'); const file = card.querySelector('.adfile');
+    if (btn && file) {
+      btn.onclick = () => file.click();
+      file.onchange = async () => {
+        const fl = file.files[0]; if (!fl) return;
+        const headline = prompt('Ad headline (brand or product):', '') || '';
+        const cta_url = prompt('Where should the button send people? (https://...):', 'https://') || '';
+        const fd = new FormData();
+        fd.append(fl.type.startsWith('image') ? 'image' : 'video', fl);
+        fd.append('headline', headline); fd.append('cta_url', cta_url);
+        btn.textContent = 'Uploading...'; btn.disabled = true;
+        try { await api(`/api/ads/campaigns/${id}/creative`, { method: 'POST', body: fd }); toast('Ad uploaded \u2014 processing'); setTimeout(renderAdvertiser, 1500); }
+        catch (err) { toast(err.message); btn.disabled = false; }
+      };
+    }
+  });
+}
+
+async function renderAdmin() {
+  if (!me) return openLoginSheet(() => renderAdmin());
+  observer?.disconnect();
+  let camps = [];
+  try { camps = await api('/api/admin/ads/campaigns'); } catch (err) { toast(err.message); return setTab(state.tab); }
+  view.innerHTML = `
+  <div class="panel">
+    <button class="ghost" id="back" style="display:flex;align-items:center;gap:6px">${icon('i-back')} Back</button>
+    <h2 style="margin:12px 0">Ad review</h2>
+    ${camps.length ? camps.map(adminCard).join('') : '<p class="dim">No campaigns yet.</p>'}
+  </div>`;
+  $('#back').onclick = () => setTab(state.tab);
+  view.querySelectorAll('[data-acamp]').forEach((card) => {
+    const id = card.dataset.acamp;
+    card.querySelectorAll('[data-status]').forEach((b) => { b.onclick = async () => {
+      try { await api(`/api/admin/ads/campaigns/${id}`, { method: 'POST', json: { status: b.dataset.status, paid: b.dataset.status === 'active' ? true : undefined } }); toast('Updated'); renderAdmin(); }
+      catch (err) { toast(err.message); }
+    }; });
+  });
+}
+
+function adminCard(c) {
+  return `<div class="card" data-acamp="${c.id}">
+    <div class="row"><b>${esc(c.company_name || '')} \u00b7 ${esc(c.name)}</b><span class="dim">${esc(c.status)}</span></div>
+    <div class="dim" style="font-size:13px;margin-top:4px">Budget ${fmt(c.budget_rwf)} RWF @ ${fmt(c.cpm_rate_rwf)} CPM \u00b7 ${fmt(c.impressions||0)} views \u00b7 due ${fmt(c.amount_due_rwf||0)} RWF \u00b7 paid: ${c.paid ? 'yes' : 'no'}</div>
+    ${c.ad ? `<div class="dim" style="font-size:13px">Creative: ${esc(c.ad.kind)} ${esc(c.ad.status)} ${c.ad.headline ? '\u00b7 ' + esc(c.ad.headline) : ''}</div>` : '<div class="dim" style="font-size:13px">No creative yet</div>'}
+    <div class="chips" style="margin-top:8px">
+      <button class="chip" data-status="active">Approve &amp; activate</button>
+      <button class="chip" data-status="paused">Pause</button>
+      <button class="chip" data-status="rejected">Reject</button>
+    </div>
+  </div>`;
 }
 
 // ---------- tabs ----------

@@ -9,10 +9,11 @@ import {
   provider, startTip, startOrder, startWithdrawal, availableBalance,
   confirmDelivery, refundOrder, startSettlementWorker,
 } from './money.js';
-import { transcode, probeDuration, hasFfmpeg, muxAudio, imageToVideo } from './transcode.js';
+import { renderRenditions, probeDuration, hasFfmpeg } from './transcode.js';
 import { signup, login, getSessionUser, deleteSession, publicUser } from './auth.js';
 import { storageMode, putObject, deleteObject, publicUrl, getObject } from './storage.js';
 import { ensureTracks } from './tracks.js';
+import { registerAds, injectAds } from './ads.js';
 
 const app = createApp();
 const videosDir = path.join(config.dataDir, 'videos');
@@ -76,6 +77,15 @@ function requireUser(req) {
   return u;
 }
 
+// Admin = users.is_admin, or an id listed in ADMIN_USER_IDS (comma-separated).
+const ADMIN_IDS = new Set(String(process.env.ADMIN_USER_IDS || '').split(',').map((x) => x.trim()).filter(Boolean));
+function requireAdmin(req) {
+  const u = requireUser(req);
+  if (!Number(u.is_admin) && !ADMIN_IDS.has(String(u.id))) throw Object.assign(new Error('Admins only'), { status: 403 });
+  return u;
+}
+registerAds(app, { db, sendJson, requireUser, currentUser, requireAdmin, parseUpload, renderRenditions, probeDuration, putObject, storageMode, videosDir, config });
+
 app.post('/api/auth/signup', async (req, res) => {
   const { user, token } = signup(req.body ?? {});
   sendJson(res, 200, { token, user: { ...publicUser(user), phone: user.phone } });
@@ -94,7 +104,7 @@ app.post('/api/auth/logout', async (req, res) => {
 app.get('/api/me', (req, res) => {
   const u = currentUser(req);
   if (!u) return sendJson(res, 401, { error: 'Not signed in' });
-  sendJson(res, 200, { ...publicUser(u), phone: u.phone });
+  sendJson(res, 200, { ...publicUser(u), phone: u.phone, is_admin: Number(u.is_admin) || (ADMIN_IDS.has(String(u.id)) ? 1 : 0) });
 });
 
 // ---------- profile photo ----------
@@ -183,7 +193,7 @@ app.get('/api/feed', (req, res) => {
     r.score = (1 + Number(r.views) + Number(r.likes) * 3 + Number(r.tip_count) * 12) / Math.pow(ageHours + 2, 1.4);
   }
   rows.sort((a, b) => b.score - a.score);
-  sendJson(res, 200, rows.slice(0, 50));
+  sendJson(res, 200, injectAds(db, rows.slice(0, 50)));
 });
 
 // ---------- search ----------
@@ -313,8 +323,8 @@ app.post('/api/videos', async (req, res) => {
     }
   }
 
-  const filename = `v${Date.now()}.mp4`;
-  const outPath = path.join(videosDir, filename);
+  const stem = `v${Date.now()}`;
+  const outBase = path.join(videosDir, stem);
 
   // Save the row as 'processing' and reply straight away. The heavy ffmpeg
   // encode + upload runs in the background, so posting feels instant; the feed
@@ -322,35 +332,43 @@ app.post('/api/videos', async (req, res) => {
   const info = db.prepare(`
     INSERT INTO videos (user_id, title, kind, lang, filename, sound, status)
     VALUES (?, ?, ?, ?, ?, ?, 'processing')
-  `).run(user.id, fields.title || 'Untitled', fields.kind === 'learn' ? 'learn' : 'watch', fields.lang || 'rw', filename, sound);
+  `).run(user.id, fields.title || 'Untitled', fields.kind === 'learn' ? 'learn' : 'watch', fields.lang || 'rw', stem, sound);
   const videoId = Number(info.lastInsertRowid);
   sendJson(res, 200, db.prepare('SELECT * FROM videos WHERE id=?').get(videoId));
 
-  processUpload({ videoId, isImage, mediaPath: mediaFile.path, audioPath, outPath, filename, cleanup })
+  processUpload({ videoId, isImage, mediaPath: mediaFile.path, audioPath, outBase, stem, cleanup })
     .catch((e) => {
       console.error(`[upload] video ${videoId} transcode failed:`, e?.message || e);
       try { db.prepare("UPDATE videos SET status='failed' WHERE id=?").run(videoId); } catch { /* db gone */ }
-      fs.rm(outPath, { force: true }, () => {});
       for (const f of cleanup) fs.rm(f, { force: true }, () => {});
     });
 });
 
 // Background worker: encode, store, then mark the video ready. ffmpeg runs as a
 // child process so this never blocks the event loop or other requests.
-async function processUpload({ videoId, isImage, mediaPath, audioPath, outPath, filename, cleanup }) {
+async function processUpload({ videoId, isImage, mediaPath, audioPath, outBase, stem, cleanup }) {
   try {
-    if (isImage) await imageToVideo(mediaPath, audioPath, outPath);
-    else if (audioPath) await muxAudio(mediaPath, audioPath, outPath);
-    else await transcode(mediaPath, outPath);
-
-    const duration = await probeDuration(outPath);
-    const size = fs.statSync(outPath).size;
-
+    const labels = await renderRenditions(mediaPath, outBase, {
+      isImage, audioPath,
+      onFirst: async () => {
+        // Publish as soon as the 480p floor exists, so the post goes live fast.
+        const p480 = `${outBase}_480.mp4`;
+        const duration = await probeDuration(p480);
+        const size = fs.statSync(p480).size;
+        if (storageMode === 'r2') { await putObject(`videos/${stem}_480.mp4`, fs.readFileSync(p480), 'video/mp4'); fs.rmSync(p480, { force: true }); }
+        db.prepare("UPDATE videos SET status='ready', duration_s=?, size_bytes=?, renditions=? WHERE id=?")
+          .run(duration, size, JSON.stringify(['480']), videoId);
+      },
+    });
+    // Upload the HD renditions made after the floor, then record the full set.
     if (storageMode === 'r2') {
-      await putObject(`videos/${filename}`, fs.readFileSync(outPath), 'video/mp4');
-      fs.rmSync(outPath, { force: true }); // R2 holds the canonical copy now
+      for (const label of labels) {
+        if (label === '480') continue;
+        const p = `${outBase}_${label}.mp4`;
+        if (fs.existsSync(p)) { await putObject(`videos/${stem}_${label}.mp4`, fs.readFileSync(p), 'video/mp4'); fs.rmSync(p, { force: true }); }
+      }
     }
-    db.prepare("UPDATE videos SET status='ready', duration_s=?, size_bytes=? WHERE id=?").run(duration, size, videoId);
+    db.prepare("UPDATE videos SET renditions=? WHERE id=?").run(JSON.stringify(labels), videoId);
   } finally {
     for (const f of cleanup) fs.rm(f, { force: true }, () => {});
   }
@@ -358,7 +376,7 @@ async function processUpload({ videoId, isImage, mediaPath, audioPath, outPath, 
 
 // Single video — used by the client to poll until a fresh upload is ready.
 app.get('/api/videos/:id', (req, res) => {
-  const v = db.prepare('SELECT id, user_id, title, kind, lang, filename, duration_s, status, created_at FROM videos WHERE id=? AND deleted=0').get(Number(req.params.id));
+  const v = db.prepare('SELECT id, user_id, title, kind, lang, filename, duration_s, status, renditions, created_at FROM videos WHERE id=? AND deleted=0').get(Number(req.params.id));
   if (!v) return sendJson(res, 404, { error: 'Not found' });
   sendJson(res, 200, v);
 });
@@ -385,8 +403,12 @@ app.post('/api/videos/:id/delete', async (req, res) => {
   const video = ownVideo(req);
   // Soft delete: the row stays (tips reference it in the ledger), the file goes.
   db.prepare('UPDATE videos SET deleted=1 WHERE id=?').run(video.id);
-  if (storageMode === 'r2') deleteObject(`videos/${video.filename}`).catch(() => {});
-  else fs.rm(path.join(videosDir, String(video.filename)), { force: true }, () => {});
+  let rens = null; try { rens = video.renditions ? JSON.parse(video.renditions) : null; } catch { rens = null; }
+  const keys = rens && rens.length ? rens.map((r) => `videos/${video.filename}_${r}.mp4`) : [`videos/${video.filename}`];
+  for (const k of keys) {
+    if (storageMode === 'r2') deleteObject(k).catch(() => {});
+    else fs.rm(path.join(config.dataDir, k), { force: true }, () => {});
+  }
   sendJson(res, 200, { ok: true });
 });
 
@@ -500,6 +522,7 @@ app.get('/api/health', (req, res) => {
     durable: storageMode === 'r2',
     provider: provider.name,
     videos: Number(db.prepare('SELECT COUNT(*) c FROM videos WHERE deleted=0').get().c),
+    active_ad_campaigns: Number(db.prepare("SELECT COUNT(*) c FROM ad_campaigns WHERE status='active'").get().c),
   });
 });
 
