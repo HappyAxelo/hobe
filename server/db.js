@@ -252,6 +252,8 @@ try { db.exec("UPDATE videos SET status='failed' WHERE status='processing'"); } 
 try { db.exec('ALTER TABLE videos ADD COLUMN renditions TEXT'); } catch { /* exists */ }
 // Ad review access.
 try { db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0'); } catch { /* exists */ }
+// Record which user sent a tip, so the creator can see who tipped them.
+try { db.exec('ALTER TABLE transactions ADD COLUMN payer_user_id INTEGER'); } catch { /* exists */ }
 
 export function getBalance(account) {
   const row = db.prepare('SELECT COALESCE(SUM(amount),0) AS bal FROM ledger WHERE account = ?').get(account);

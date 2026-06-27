@@ -700,6 +700,14 @@ function bindOrderButtons() {
 }
 
 // ---------- wallet ----------
+function tipRow(t) {
+  const who = t.tipper_name || 'A supporter';
+  return `<div class="entry" style="align-items:center">
+    <span style="display:flex;align-items:center;gap:10px">${avatarHtml({ name: who, avatar: t.tipper_avatar, color: t.tipper_color }, 34)}<span>${esc(who)} tipped you<br><span class="dim">${new Date(t.created_at * 1000).toLocaleDateString()}</span></span></span>
+    <b class="ok">${fmt(t.amount)} RWF</b>
+  </div>`;
+}
+
 async function renderWallet() {
   if (!me) {
     view.innerHTML = `<div class="empty"><p>Your wallet lives behind your account.</p>
@@ -728,6 +736,7 @@ async function renderWallet() {
         <button class="primary" id="wdbtn" ${w.available < 100 ? 'disabled' : ''}>Cash out now</button>
       </div>
     </div>
+    ${w.tips && w.tips.length ? `<h3>Tips received</h3><div class="card">${w.tips.map(tipRow).join('')}</div>` : ''}
     <h3>Activity</h3>
     <div class="card">
       ${w.entries.map((e) => `<div class="entry">

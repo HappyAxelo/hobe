@@ -8,21 +8,21 @@ import { createProvider } from './momo/index.js';
 export const provider = createProvider();
 
 const insertTxn = db.prepare(`
-  INSERT INTO transactions (type, status, amount, payer_phone, payee_user_id, video_id, product_id, provider, provider_ref)
-  VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO transactions (type, status, amount, payer_phone, payer_user_id, payee_user_id, video_id, product_id, provider, provider_ref)
+  VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const insertLedger = db.prepare(`
   INSERT INTO ledger (txn_id, account, amount, kind, memo) VALUES (?, ?, ?, ?, ?)
 `);
 const getTxn = db.prepare('SELECT * FROM transactions WHERE id=?');
 
-function newTxn({ type, amount, payerPhone = null, payeeUserId = null, videoId = null, productId = null, providerRef }) {
-  const info = insertTxn.run(type, amount, payerPhone, payeeUserId, videoId, productId, provider.name, providerRef);
+function newTxn({ type, amount, payerPhone = null, payerUserId = null, payeeUserId = null, videoId = null, productId = null, providerRef }) {
+  const info = insertTxn.run(type, amount, payerPhone, payerUserId, payeeUserId, videoId, productId, provider.name, providerRef);
   return getTxn.get(Number(info.lastInsertRowid));
 }
 
 // ---------- Tips ----------
-export async function startTip({ videoId, amount, payerPhone }) {
+export async function startTip({ videoId, amount, payerPhone, payerUserId = null }) {
   const video = db.prepare('SELECT v.*, u.name AS creator_name FROM videos v JOIN users u ON u.id=v.user_id WHERE v.id=?').get(videoId);
   if (!video) throw httpErr(404, 'Video not found');
   if (!Number.isInteger(amount) || amount < 100) throw httpErr(400, 'Minimum tip is 100 RWF');
@@ -30,7 +30,7 @@ export async function startTip({ videoId, amount, payerPhone }) {
   const { providerRef } = await provider.requestToPay({
     amount, payerPhone, externalId: `tip-${videoId}-${Date.now()}`, memo: `Tip for ${video.creator_name} on Hobe`,
   });
-  return newTxn({ type: 'tip', amount, payerPhone, payeeUserId: Number(video.user_id), videoId: Number(videoId), providerRef });
+  return newTxn({ type: 'tip', amount, payerPhone, payerUserId, payeeUserId: Number(video.user_id), videoId: Number(videoId), providerRef });
 }
 
 const settleTipLedger = transaction((txn) => {

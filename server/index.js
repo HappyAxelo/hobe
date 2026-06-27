@@ -434,7 +434,7 @@ app.post('/api/tips', async (req, res) => {
   const { video_id, amount, payer_phone } = req.body ?? {};
   const phone = payer_phone || user?.phone;
   if (!phone) return sendJson(res, 400, { error: 'payer_phone required' });
-  const txn = await startTip({ videoId: video_id, amount: Number(amount), payerPhone: phone });
+  const txn = await startTip({ videoId: video_id, amount: Number(amount), payerPhone: phone, payerUserId: user?.id ?? null });
   sendJson(res, 202, txn);
 });
 
@@ -454,9 +454,15 @@ app.get('/api/wallet', (req, res) => {
     WHERE l.account=? ORDER BY l.id DESC LIMIT 50
   `).all(account);
   const { balance, pendingOut, available } = availableBalance(user.id);
+  const tips = db.prepare(`
+    SELECT t.amount, t.created_at, t.payer_phone, u.name AS tipper_name, u.handle AS tipper_handle, u.avatar AS tipper_avatar, u.color AS tipper_color
+    FROM transactions t LEFT JOIN users u ON u.id = t.payer_user_id
+    WHERE t.type='tip' AND t.status='success' AND t.payee_user_id=?
+    ORDER BY t.id DESC LIMIT 30
+  `).all(user.id);
   sendJson(res, 200, {
     balance, pending_withdrawals: pendingOut, available,
-    currency: config.currency, momo_number: user.phone, entries,
+    currency: config.currency, momo_number: user.phone, entries, tips,
   });
 });
 
