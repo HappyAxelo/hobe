@@ -14,6 +14,7 @@ import { signup, login, getSessionUser, deleteSession, publicUser } from './auth
 import { storageMode, putObject, deleteObject, publicUrl, getObject } from './storage.js';
 import { ensureTracks } from './tracks.js';
 import { registerAds, injectAds } from './ads.js';
+import { registerComments } from './comments.js';
 
 const app = createApp();
 const videosDir = path.join(config.dataDir, 'videos');
@@ -85,6 +86,7 @@ function requireAdmin(req) {
   return u;
 }
 registerAds(app, { db, sendJson, requireUser, currentUser, requireAdmin, parseUpload, renderRenditions, probeDuration, putObject, storageMode, videosDir, config });
+registerComments(app, { db, sendJson, requireUser, currentUser });
 
 app.post('/api/auth/signup', async (req, res) => {
   const { user, token } = signup(req.body ?? {});
@@ -175,6 +177,7 @@ app.get('/api/feed', (req, res) => {
       (SELECT COUNT(*) FROM transactions t WHERE t.video_id=v.id AND t.type='tip' AND t.status='success') AS tip_count,
       (SELECT COUNT(*) FROM reposts r WHERE r.video_id=v.id) AS repost_count,
       (SELECT COUNT(*) FROM saves sv WHERE sv.video_id=v.id) AS save_count,
+      (SELECT COUNT(*) FROM comments cm WHERE cm.video_id=v.id AND cm.deleted=0) AS comment_count,
       u.verified AS creator_verified
     FROM videos v JOIN users u ON u.id = v.user_id
     WHERE v.kind = ? AND v.deleted = 0 AND v.status = 'ready'
@@ -217,6 +220,7 @@ app.get('/api/search', (req, res) => {
       (SELECT COUNT(*) FROM transactions t WHERE t.video_id=v.id AND t.type='tip' AND t.status='success') AS tip_count,
       (SELECT COUNT(*) FROM reposts r WHERE r.video_id=v.id) AS repost_count,
       (SELECT COUNT(*) FROM saves sv WHERE sv.video_id=v.id) AS save_count,
+      (SELECT COUNT(*) FROM comments cm WHERE cm.video_id=v.id AND cm.deleted=0) AS comment_count,
       u.verified AS creator_verified
     FROM videos v JOIN users u ON u.id = v.user_id
     WHERE v.deleted=0 AND v.status='ready'

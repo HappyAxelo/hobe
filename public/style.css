@@ -327,3 +327,24 @@ input:focus, select:focus { box-shadow: 0 0 0 3px rgba(255,198,46,.15); }
   .slide { width: 100%; }
   .slide video { border-radius: 16px; }
 }
+
+/* ---------- comments ---------- */
+.csheet { display: flex; flex-direction: column; max-height: 72vh; }
+.chead { text-align: center; font-weight: 700; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.clist { overflow-y: auto; flex: 1; padding: 6px 0; }
+.citem { display: flex; gap: 10px; padding: 10px 2px; align-items: flex-start; }
+.citem.cisreply { padding-left: 4px; }
+.cmain { flex: 1; min-width: 0; }
+.cname { font-size: 13px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
+.ctext { font-size: 15px; margin: 2px 0 5px; overflow-wrap: anywhere; }
+.cmeta { display: flex; gap: 16px; align-items: center; font-size: 12.5px; color: var(--dim); }
+.cmeta button { background: none; border: none; color: var(--dim); font-size: 12.5px; font-weight: 700; padding: 0; cursor: pointer; }
+.creplies { margin-top: 8px; }
+.clike { background: none; border: none; display: flex; flex-direction: column; align-items: center; color: var(--dim); cursor: pointer; flex: none; font-size: 11px; gap: 2px; }
+.clike.liked { color: var(--heart); }
+.clike svg { width: 18px; height: 18px; }
+.cbar { border-top: 1px solid var(--line); padding-top: 10px; }
+.creplyhint { font-size: 12.5px; color: var(--gold); padding: 0 4px 6px; }
+.cinputrow { display: flex; gap: 8px; align-items: center; }
+.cinputrow input { flex: 1; margin: 0; }
+.csend { background: var(--gold); color: #1a1400; border: none; border-radius: 10px; padding: 11px 16px; font-weight: 800; cursor: pointer; flex: none; }

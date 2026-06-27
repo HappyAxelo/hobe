@@ -372,6 +372,7 @@ function slideHtml(v, kind) {
     <div class="rail">
       <button class="railbtn tipbtn" data-act="tip"><span class="ring">${icon('i-coin')}</span><span class="cnt">Tip</span></button>
       <button class="railbtn ${v.liked ? 'liked' : ''}" data-act="like">${icon('i-heart')}<span class="cnt">${fmt(v.likes)}</span></button>
+      <button class="railbtn" data-act="comment">${icon('i-comment')}<span class="cnt">${fmt(v.comment_count || 0)}</span></button>
       <button class="railbtn ${v.saved ? 'on' : ''}" data-act="save">${icon('i-bookmark')}<span class="cnt">Save</span></button>
       <button class="railbtn ${v.reposted ? 'on' : ''}" data-act="repost">${icon('i-repost')}<span class="cnt">${fmt(v.repost_count || 0)}</span></button>
       <button class="railbtn" data-act="share">${icon('i-share')}<span class="cnt">Share</span></button>
@@ -456,6 +457,8 @@ async function feedClick(e) {
       btn.classList.toggle('following', r.following);
       btn.textContent = r.following ? 'Following' : 'Follow';
     } catch (err) { toast(err.message); }
+  } else if (act === 'comment') {
+    openComments(videoId);
   } else if (act === 'profile') {
     renderProfile(Number(slide.dataset.creator));
   }
@@ -964,6 +967,110 @@ function adminCard(c) {
       <button class="chip" data-status="rejected">Reject</button>
     </div>
   </div>`;
+}
+
+// ---------- comments ----------
+function timeAgo(ts) {
+  const sec = Math.max(1, Math.floor(Date.now() / 1000 - Number(ts)));
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60); if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60); if (h < 24) return h + 'h';
+  const d = Math.floor(h / 24); if (d < 7) return d + 'd';
+  const w = Math.floor(d / 7); if (w < 5) return w + 'w';
+  return Math.floor(d / 30) + 'mo';
+}
+
+let commentCtx = null;
+
+async function openComments(videoId) {
+  commentCtx = { videoId, replyTo: null };
+  openSheet(`
+    <div class="csheet">
+      <div class="chead">Comments</div>
+      <div class="clist" id="clist"><p class="dim center" style="padding:22px">Loading...</p></div>
+      <div class="cbar">
+        <div id="creplyhint" class="creplyhint hidden"></div>
+        <div class="cinputrow">
+          <input id="cinput" placeholder="Add a comment..." maxlength="500" ${me ? '' : 'disabled'}>
+          <button id="csend" class="csend">${me ? 'Post' : 'Sign in'}</button>
+        </div>
+      </div>
+    </div>`);
+  await loadComments();
+  const input = $('#cinput'); const send = $('#csend');
+  send.onclick = async () => {
+    if (!me) { closeSheet(); return openLoginSheet(() => openComments(videoId)); }
+    const body = input.value.trim(); if (!body) return;
+    send.disabled = true;
+    try {
+      await api(`/api/videos/${videoId}/comments`, { method: 'POST', json: { body, parent_id: commentCtx.replyTo?.id || undefined } });
+      input.value = ''; clearReply();
+      await loadComments();
+    } catch (err) { toast(err.message); }
+    send.disabled = false;
+  };
+  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); send.onclick(); } };
+}
+
+function clearReply() {
+  if (commentCtx) commentCtx.replyTo = null;
+  const h = $('#creplyhint'); if (h) { h.classList.add('hidden'); h.textContent = ''; }
+  const i = $('#cinput'); if (i) i.placeholder = 'Add a comment...';
+}
+
+async function loadComments() {
+  const list = $('#clist'); if (!list) return;
+  let rows = [];
+  try { rows = await api(`/api/videos/${commentCtx.videoId}/comments`); }
+  catch (err) { list.innerHTML = `<p class="dim center">${esc(err.message)}</p>`; return; }
+  list.innerHTML = rows.length ? rows.map((c) => commentHtml(c)).join('') : '<p class="dim center" style="padding:24px">No comments yet. Be the first.</p>';
+  bindComments(list);
+}
+
+function commentHtml(c, isReply = false) {
+  return `<div class="citem ${isReply ? 'cisreply' : ''}" data-cid="${c.id}" data-cname="${esc(c.user.name)}">
+    ${avatarHtml(c.user, isReply ? 30 : 36)}
+    <div class="cmain">
+      <div class="cname">${esc(c.user.name)}${Number(c.user.verified) ? '<svg class="vrf"><use href="#i-verified"/></svg>' : ''}</div>
+      <div class="ctext">${esc(c.body)}</div>
+      <div class="cmeta">
+        <span>${timeAgo(c.created_at)}</span>
+        <button data-cact="reply">Reply</button>
+        ${c.reply_count ? `<button data-cact="viewreplies" data-rc="${c.reply_count}">View ${c.reply_count} ${c.reply_count > 1 ? 'replies' : 'reply'}</button>` : ''}
+      </div>
+      <div class="creplies" data-repliesfor="${c.id}"></div>
+    </div>
+    <button class="clike ${c.liked ? 'liked' : ''}" data-cact="like">${icon('i-heart')}<span class="cnt">${c.likes ? fmt(c.likes) : ''}</span></button>
+  </div>`;
+}
+
+function bindComments(scope) {
+  scope.querySelectorAll('[data-cact]').forEach((b) => {
+    if (b.dataset.bound) return; b.dataset.bound = '1';
+    const item = b.closest('[data-cid]'); const cid = item.dataset.cid;
+    b.onclick = async () => {
+      const act = b.dataset.cact;
+      if (act === 'like') {
+        if (!me) { closeSheet(); return openLoginSheet(() => openComments(commentCtx.videoId)); }
+        try { const r = await api(`/api/comments/${cid}/like`, { method: 'POST' }); b.classList.toggle('liked', r.liked); $('.cnt', b).textContent = r.likes ? fmt(r.likes) : ''; }
+        catch (err) { toast(err.message); }
+      } else if (act === 'reply') {
+        if (!me) { closeSheet(); return openLoginSheet(() => openComments(commentCtx.videoId)); }
+        commentCtx.replyTo = { id: cid, name: item.dataset.cname };
+        const h = $('#creplyhint'); h.textContent = `Replying to ${item.dataset.cname}`; h.classList.remove('hidden');
+        const i = $('#cinput'); i.placeholder = `Reply to ${item.dataset.cname}...`; i.focus();
+      } else if (act === 'viewreplies') {
+        const box = item.querySelector(`[data-repliesfor="${cid}"]`);
+        if (box.dataset.open) { box.innerHTML = ''; delete box.dataset.open; b.textContent = `View ${b.dataset.rc} ${Number(b.dataset.rc) > 1 ? 'replies' : 'reply'}`; return; }
+        try {
+          const reps = await api(`/api/comments/${cid}/replies`);
+          box.innerHTML = reps.map((r) => commentHtml(r, true)).join('');
+          box.dataset.open = '1'; b.textContent = 'Hide replies';
+          bindComments(box);
+        } catch (err) { toast(err.message); }
+      }
+    };
+  });
 }
 
 // ---------- tabs ----------

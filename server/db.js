@@ -139,6 +139,28 @@ CREATE TABLE IF NOT EXISTS video_likes (
 CREATE INDEX IF NOT EXISTS idx_videolikes_user ON video_likes(user_id);
 CREATE INDEX IF NOT EXISTS idx_videolikes_video ON video_likes(video_id);
 
+CREATE TABLE IF NOT EXISTS comments (
+  id INTEGER PRIMARY KEY,
+  video_id INTEGER NOT NULL REFERENCES videos(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  parent_id INTEGER REFERENCES comments(id),
+  body TEXT NOT NULL,
+  likes INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_comments_video ON comments(video_id);
+CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);
+
+CREATE TABLE IF NOT EXISTS comment_likes (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  comment_id INTEGER NOT NULL REFERENCES comments(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(user_id, comment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_commentlikes_user ON comment_likes(user_id);
+
 CREATE TABLE IF NOT EXISTS follows (
   id INTEGER PRIMARY KEY,
   follower_id INTEGER NOT NULL REFERENCES users(id),
