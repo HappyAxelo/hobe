@@ -184,8 +184,9 @@ app.get('/api/feed', (req, res) => {
   if (fuser) {
     const rep = new Set(db.prepare('SELECT video_id FROM reposts WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
     const sav = new Set(db.prepare('SELECT video_id FROM saves WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
+    const lik = new Set(db.prepare('SELECT video_id FROM video_likes WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
     const fol = new Set(db.prepare('SELECT creator_id FROM follows WHERE follower_id=?').all(fuser.id).map((x) => x.creator_id));
-    for (const r of rows) { r.reposted = rep.has(r.id); r.saved = sav.has(r.id); r.following = fol.has(r.user_id); }
+    for (const r of rows) { r.reposted = rep.has(r.id); r.saved = sav.has(r.id); r.liked = lik.has(r.id); r.following = fol.has(r.user_id); }
   }
   const now = Date.now() / 1000;
   for (const r of rows) {
@@ -227,8 +228,9 @@ app.get('/api/search', (req, res) => {
   if (fuser) {
     const rep = new Set(db.prepare('SELECT video_id FROM reposts WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
     const sav = new Set(db.prepare('SELECT video_id FROM saves WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
+    const lik = new Set(db.prepare('SELECT video_id FROM video_likes WHERE user_id=?').all(fuser.id).map((x) => x.video_id));
     const fol = new Set(db.prepare('SELECT creator_id FROM follows WHERE follower_id=?').all(fuser.id).map((x) => x.creator_id));
-    for (const r of videos) { r.reposted = rep.has(r.id); r.saved = sav.has(r.id); r.following = fol.has(r.user_id); }
+    for (const r of videos) { r.reposted = rep.has(r.id); r.saved = sav.has(r.id); r.liked = lik.has(r.id); r.following = fol.has(r.user_id); }
     for (const c of creators) c.following = fol.has(c.id);
   }
   sendJson(res, 200, { creators, videos });
@@ -239,8 +241,18 @@ app.post('/api/videos/:id/view', (req, res) => {
   sendJson(res, 200, { ok: true });
 });
 app.post('/api/videos/:id/like', (req, res) => {
-  db.prepare('UPDATE videos SET likes = likes + 1 WHERE id=?').run(req.params.id);
-  sendJson(res, 200, { ok: true, likes: Number(db.prepare('SELECT likes FROM videos WHERE id=?').get(req.params.id)?.likes ?? 0) });
+  const user = requireUser(req);
+  const vid = Number(req.params.id);
+  const exists = db.prepare('SELECT 1 FROM video_likes WHERE user_id=? AND video_id=?').get(user.id, vid);
+  if (exists) {
+    db.prepare('DELETE FROM video_likes WHERE user_id=? AND video_id=?').run(user.id, vid);
+    db.prepare('UPDATE videos SET likes = MAX(0, likes - 1) WHERE id=?').run(vid);
+  } else {
+    db.prepare('INSERT INTO video_likes (user_id, video_id) VALUES (?, ?)').run(user.id, vid);
+    db.prepare('UPDATE videos SET likes = likes + 1 WHERE id=?').run(vid);
+  }
+  const likes = Number(db.prepare('SELECT likes FROM videos WHERE id=?').get(vid)?.likes ?? 0);
+  sendJson(res, 200, { liked: !exists, likes });
 });
 
 // ---------- repost / save (toggle) ----------

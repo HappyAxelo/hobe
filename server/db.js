@@ -129,6 +129,16 @@ CREATE TABLE IF NOT EXISTS saves (
 );
 CREATE INDEX IF NOT EXISTS idx_saves_user ON saves(user_id);
 
+CREATE TABLE IF NOT EXISTS video_likes (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  video_id INTEGER NOT NULL REFERENCES videos(id),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(user_id, video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_videolikes_user ON video_likes(user_id);
+CREATE INDEX IF NOT EXISTS idx_videolikes_video ON video_likes(video_id);
+
 CREATE TABLE IF NOT EXISTS follows (
   id INTEGER PRIMARY KEY,
   follower_id INTEGER NOT NULL REFERENCES users(id),
