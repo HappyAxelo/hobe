@@ -1096,5 +1096,7 @@ function esc(s) {
 }
 
 // ---------- boot ----------
+// Tapping the logo goes home and refreshes the feed (jumps to top), like TikTok.
+$('.logo').onclick = () => { closeSheet(); setTab('watch'); };
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 fetchMe().finally(() => render());
