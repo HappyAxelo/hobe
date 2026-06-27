@@ -371,7 +371,7 @@ function slideHtml(v, kind) {
     <div class="scrim"></div>
     <div class="rail">
       <button class="railbtn tipbtn" data-act="tip"><span class="ring">${icon('i-coin')}</span><span class="cnt">Tip</span></button>
-      <button class="railbtn ${v.liked ? 'on liked' : ''}" data-act="like">${icon('i-heart')}<span class="cnt">${fmt(v.likes)}</span></button>
+      <button class="railbtn ${v.liked ? 'liked' : ''}" data-act="like">${icon('i-heart')}<span class="cnt">${fmt(v.likes)}</span></button>
       <button class="railbtn ${v.saved ? 'on' : ''}" data-act="save">${icon('i-bookmark')}<span class="cnt">Save</span></button>
       <button class="railbtn ${v.reposted ? 'on' : ''}" data-act="repost">${icon('i-repost')}<span class="cnt">${fmt(v.repost_count || 0)}</span></button>
       <button class="railbtn" data-act="share">${icon('i-share')}<span class="cnt">Share</span></button>
@@ -419,7 +419,6 @@ async function feedClick(e) {
       const r = await api(`/api/videos/${videoId}/like`, { method: 'POST' });
       $('.cnt', btn).textContent = fmt(r.likes);
       btn.classList.toggle('liked', r.liked);
-      btn.classList.toggle('on', r.liked);
     } catch (err) { toast(err.message); }
   } else if (act === 'save') {
     if (!me) return openLoginSheet();
